@@ -113,6 +113,11 @@ def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _n
     logging.info(f"Loaded norm stats from {norm_stats_dir}")
     return norm_stats
 
+def load_norm_stats(norm_stats_dir: epath.Path | str,) -> dict[str, _normalize.NormStats] | None:
+    norm_stats_dir = epath.Path(norm_stats_dir)
+    norm_stats = _normalize.load(norm_stats_dir)
+    logging.info(f"Loaded norm stats from {norm_stats_dir}")
+    return norm_stats
 
 class Callback(Protocol):
     def __call__(self, directory: epath.Path) -> None: ...
