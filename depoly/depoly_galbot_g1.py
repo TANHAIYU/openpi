@@ -39,7 +39,7 @@ from galbot_control_interface import GalbotControlInterface
 
 CAMERA_NAMES = ["head", "left_arm", "right_arm"]
 CAMERA_SIZE = (321, 240)
-GRIPPER_OPEN = 1.0        # Gripper open percentage
+GRIPPER_OPEN = 0.8        # Gripper open percentage
 GRIPPER_CLOSE = 0.0       # Gripper close percentage
 LEFT_ARM_RESET = [0.6356191635131836, -0.7742524147033691, -0.1794041097164154, -1.5635093450546265, -2.3538222312927246, 0.1856122463941574, 0.11708539724349976]
 # RIGHT_ARM_RESET = [0.483, 0.877, 0.131, 1.934, 0.399, 0.415, 0.021]
@@ -152,23 +152,24 @@ class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
         self.logger = logger
-        self.reset()
+        self.reset_pose()
 
-    def reset(self):
-        """Reset robotic arm to safe initial state"""
-        self.interface.set_gripper_status(
-            width_percent=GRIPPER_OPEN, 
-            speed=1.0, 
-            force=11, 
-            gripper="left_gripper"
-        )
+    def reset_pose(self):
         self.interface.set_arm_joint_angles(
             arm_joint_angles=LEFT_ARM_RESET, 
             speed=1.0, 
             arm="left_arm", 
             asynchronous=True
         )
-        time.sleep(4)  # Wait for reset completion
+        time.sleep(2)
+    
+    def open_gripper(self):
+        self.interface.set_gripper_status(
+            width_percent=GRIPPER_OPEN, 
+            speed=1.0, 
+            force=10, 
+            gripper="left_gripper"
+        )
 
     def execute_action(self, action: np.ndarray):
         """Execute actions output by OpenPI (7 joints + 1 gripper)"""
@@ -311,7 +312,7 @@ def main():
     plt.savefig(f"{DEPLOY_CONFIG['output_dir']}/action_trajectory.png", dpi=97)
 
     # final reset
-    galbot_control.reset()
+    galbot_control.reset_pose()
     logger.info("Deployment script execution completed")
 
 
