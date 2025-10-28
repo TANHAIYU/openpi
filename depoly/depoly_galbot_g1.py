@@ -39,29 +39,28 @@ from galbot_control_interface import GalbotControlInterface
 
 CAMERA_NAMES = ["head", "left_arm", "right_arm"]
 CAMERA_SIZE = (321, 240)
-GRIPPER_OPEN = 2.0        # Gripper open percentage
-GRIPPER_CLOSE = 1.0       # Gripper close percentage
-LEFT_ARM_RESET = [2.009, -1.349, -1.135, -1.934, -0.108, 0.299, 0.360]
-RIGHT_ARM_RESET = [0.483, 0.877, 0.131, 1.934, 0.399, 0.415, 0.021]
+GRIPPER_OPEN = 1.0        # Gripper open percentage
+GRIPPER_CLOSE = 0.0       # Gripper close percentage
+LEFT_ARM_RESET = [0.6356191635131836, -0.7742524147033691, -0.1794041097164154, -1.5635093450546265, -2.3538222312927246, 0.1856122463941574, 0.11708539724349976]
+# RIGHT_ARM_RESET = [0.483, 0.877, 0.131, 1.934, 0.399, 0.415, 0.021]
 
 
 print(get_config("pi0_galbot_low_mem_finetune"))
 print(*(get_config("pi0_galbot_low_mem_finetune").data.base_config.data_transforms.inputs))
 
 DATA_CONFIG = get_config("pi0_galbot_low_mem_finetune").data.base_config
-CHECKPOINT_DIR = "/media/abc/Data/pi_ckpts"
 
-# norm_stats = _checkpoints.load_norm_stats(os.path.join(CHECKPOINT_DIR, "assets"), 
-#                                           DATA_CONFIG.asset_id)
-norm_stats = _checkpoints.load_norm_stats("/media/abc/Data/galbot_sps/fsk_251013/")
+MODEL_PATH = "/media/abc/Data/fsk_ckpts/pi0/1024/150000"
+
+norm_stats = _checkpoints.load_norm_stats(MODEL_PATH)
 default_prompt = "pick up the object and lift it up."
 
 DEPLOY_CONFIG = {
-    "model_path": "/home/data_sdd/weights/pi0_ckpt/galbot_fsk/1024/95000/params",  # model weights
+    "model_path": MODEL_PATH,  # model weights
     "is_pytorch": False,                                    # model type
     "device": "cuda",                                       # pi0
-    "infer_freq": 3,                                        # Inference frequency (Hz)
-    "max_steps": 20,                                        # Maximum inference steps
+    "infer_freq": 15,                                        # Inference frequency (Hz)
+    "max_steps": 100,                                        # Maximum inference steps
     "output_dir": "/home/abc/galbot_records",               # Record output directory
     "input_transforms" : [
         *DATA_CONFIG.repack_transforms.inputs,
@@ -159,20 +158,14 @@ class GalbotController:
         """Reset robotic arm to safe initial state"""
         self.interface.set_gripper_status(
             width_percent=GRIPPER_OPEN, 
-            speed=1.2, 
+            speed=1.0, 
             force=11, 
             gripper="left_gripper"
         )
         self.interface.set_arm_joint_angles(
             arm_joint_angles=LEFT_ARM_RESET, 
-            speed=1.3, 
+            speed=1.0, 
             arm="left_arm", 
-            asynchronous=True
-        )
-        self.interface.set_arm_joint_angles(
-            arm_joint_angles=RIGHT_ARM_RESET, 
-            speed=1.3, 
-            arm="right_arm", 
             asynchronous=True
         )
         time.sleep(4)  # Wait for reset completion
@@ -181,21 +174,22 @@ class GalbotController:
         """Execute actions output by OpenPI (7 joints + 1 gripper)"""
         # joint actions (first 7 dimensions)
         arm_joints = action[:7].tolist()
-        self.interface.set_arm_joint_angles(
+        arm_status = self.interface.set_arm_joint_angles(
             arm_joint_angles=arm_joints, 
-            speed=1.3, 
+            speed=1.0, 
             arm="left_arm", 
             asynchronous=True
         )
         
         # gripper action (8th dimension, normalized to [0,1])
-        gripper_pos = np.clip(action[7], 0.0, 1.0)
-        self.interface.set_gripper_status(
+        gripper_pos = np.clip(action[7]/0.06, 0.0, 1.0)
+        gripper_status = self.interface.set_gripper_status(
             width_percent=gripper_pos, 
-            speed=1.2, 
+            speed=1.0, 
             force=11, 
             gripper="left_gripper"
         )
+        return arm_status, gripper_status
 
 def main():
     # initialize logger and output directory
@@ -215,7 +209,7 @@ def main():
     galbot_control = GalbotController(logger, )
 
     # initialize camera subscriptions
-    rospy.init_node("openpi_pi0_node", anonymous=True)
+    # rospy.init_node("openpi_node", anonymous=True)
 
     logging.basicConfig(
         level=logging.INFO,  
@@ -261,12 +255,12 @@ def main():
         lambda msg, c="/left_arm_gripper/joint_states": state_callback(msg, c),
         queue_size=2
     )
-    time.sleep(3)  # waiting for subscriptions to be initialized
+    time.sleep(2)  # waiting for subscriptions to be initialized
 
     # load pi0 model and create policy
     logger.info("start load pi0 model from pretrained checkpoints...")
     config = _config.get_config("pi0_galbot_low_mem_finetune")
-    policy = _policy_config.create_trained_policy(config, "/media/abc/Data/pi_ckpts/")
+    policy = _policy_config.create_trained_policy(config, DEPLOY_CONFIG.get("model_path"))
     print("policy:", policy)
     logger.info("pi0 model and policy initialized successfully")
 
@@ -294,7 +288,9 @@ def main():
         logger.info(f"Step {step}: Action: {results['actions'].round(4)}")
 
         # execute action
-        galbot_control.execute_action(results["actions"])
+        for action in results["actions"]:
+            joints_status, gripper_status = galbot_control.execute_action(action)
+            logger.info(f"Step {step}: Executed action with joints status: {joints_status}, gripper status: {gripper_status}")
         action_records.append(results["actions"])
 
         # control frequency
