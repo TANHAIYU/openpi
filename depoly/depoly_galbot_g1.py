@@ -39,10 +39,16 @@ from galbot_control_interface import GalbotControlInterface
 
 CAMERA_NAMES = ["head", "left_arm", "right_arm"]
 CAMERA_SIZE = (321, 240)
-GRIPPER_OPEN = 0.8        # Gripper open percentage
+GRIPPER_OPEN = 0.65        # Gripper open percentage
 GRIPPER_CLOSE = 0.0       # Gripper close percentage
-LEFT_ARM_RESET = [0.6356191635131836, -0.7742524147033691, -0.1794041097164154, -1.5635093450546265, -2.3538222312927246, 0.1856122463941574, 0.11708539724349976]
+
+LD_LEFT_ARM_RESET_1 = [0.699064, -1.046655, -0.424937, -1.342327, -2.205600, 0.706614, -0.022770]
+LD_LEFT_ARM_RESET_2 = [0.713709, -1.040710, -0.412449, -1.365338, -2.193161, 0.666658, -0.017354]
+LD_LEFT_ARM_RESET_3 = [0.764810, -1.090516, -0.544276, -1.406995, -2.179666, 0.710904, -0.098007]
+
+LEFT_ARM_RESET = LD_LEFT_ARM_RESET_1
 # RIGHT_ARM_RESET = [0.483, 0.877, 0.131, 1.934, 0.399, 0.415, 0.021]
+LEFT_ARM_RESET =  [1.0093586444854736, -1.3492074012756348, -1.134690761566162, -1.9343969821929932, -0.1084338054060936, 0.2987898588180542, 0.3599584102630615]
 
 
 print(get_config("pi0_galbot_low_mem_finetune"))
@@ -50,7 +56,7 @@ print(*(get_config("pi0_galbot_low_mem_finetune").data.base_config.data_transfor
 
 DATA_CONFIG = get_config("pi0_galbot_low_mem_finetune").data.base_config
 
-MODEL_PATH = "/media/abc/Data/fsk_ckpts/pi0/1024/150000"
+MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1026/100000"
 
 norm_stats = _checkpoints.load_norm_stats(MODEL_PATH)
 default_prompt = "pick up the object and lift it up."
@@ -60,8 +66,8 @@ DEPLOY_CONFIG = {
     "is_pytorch": False,                                    # model type
     "device": "cuda",                                       # pi0
     "infer_freq": 15,                                        # Inference frequency (Hz)
-    "max_steps": 100,                                        # Maximum inference steps
-    "output_dir": "/home/abc/galbot_records",               # Record output directory
+    "max_steps": 18,                                        # Maximum inference steps
+    "output_dir": "/home/abc/galbot_records/1",               # Record output directory
     "input_transforms" : [
         *DATA_CONFIG.repack_transforms.inputs,
         _transforms.InjectDefaultPrompt(default_prompt),
@@ -97,7 +103,7 @@ def make_galbot_sample(head_cam, left_cam, state) -> dict:
         "state": np.random.rand(8),
         "image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "prompt": "grip and pick the object up",
+        "prompt": "place the spider board in the designated position.",
     }
     init_sample["image"] = head_cam
     init_sample["wrist_image"] = left_cam
@@ -127,7 +133,7 @@ def get_observation() -> Dict[str, Any]:
     """Construct observation dictionary required by OpenPI (matching Policy input format)"""
     for cam in CAMERA_NAMES:
         if CAMERA_IMAGES[cam] is None:
-            raise ValueError(f"No image received from camera {cam}")
+            logging.error(f"No image received from camera {cam}")
     left_arm_joints = STATE["/left_arm/joint_states"]
     left_gripper = STATE["/left_arm_gripper/joint_states"]
     
@@ -136,6 +142,10 @@ def get_observation() -> Dict[str, Any]:
         cam: cv2.cvtColor(CAMERA_IMAGES[cam], cv2.COLOR_BGR2RGB) 
         for cam in CAMERA_NAMES
     }
+
+    # # save images for debugging
+    # for cam, img in images.items():
+    #     cv2.imwrite(f"/home/abc/galbot_records/debug_{cam}.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     
     # 4. Collect joint states (7 left arm joints + gripper state)
     joint_state = np.concatenate([
@@ -152,7 +162,7 @@ class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
         self.logger = logger
-        self.reset_pose()
+        # self.reset_pose()
 
     def reset_pose(self):
         self.interface.set_arm_joint_angles(
@@ -177,13 +187,13 @@ class GalbotController:
         arm_joints = action[:7].tolist()
         arm_status = self.interface.set_arm_joint_angles(
             arm_joint_angles=arm_joints, 
-            speed=1.0, 
+            speed=0.1, 
             arm="left_arm", 
             asynchronous=True
         )
         
         # gripper action (8th dimension, normalized to [0,1])
-        gripper_pos = np.clip(action[7]/0.06, 0.0, 1.0)
+        gripper_pos = np.clip((action[7]-0.01)/0.05, 0.0, 0.65)
         gripper_status = self.interface.set_gripper_status(
             width_percent=gripper_pos, 
             speed=1.0, 
@@ -256,7 +266,7 @@ def main():
         lambda msg, c="/left_arm_gripper/joint_states": state_callback(msg, c),
         queue_size=2
     )
-    time.sleep(2)  # waiting for subscriptions to be initialized
+    time.sleep(1)  # waiting for subscriptions to be initialized
 
     # load pi0 model and create policy
     logger.info("start load pi0 model from pretrained checkpoints...")
@@ -272,13 +282,12 @@ def main():
         obs = get_observation()
         logger.info(f"Step {step}: Observation data acquired successfully")
 
-        if step % 3 == 0:
-            for cam, img in obs.items():
-                if cam in ["image", "wrist_image"]:
-                    cv2.imwrite(
-                        f"{DEPLOY_CONFIG['output_dir']}/obs_{cam}_step{step}.png",
-                        cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # Convert back to BGR for saving
-                    )
+        # for cam, img in obs.items():
+        #     if cam in ["image", "wrist_image"]:
+        #         cv2.imwrite(
+        #             f"{DEPLOY_CONFIG['output_dir']}/obs_{cam}_step{step}.png",
+        #             cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # Convert back to BGR for saving
+        #         )
 
         # perform inference with pi0 policy
         start_time = time.time()
@@ -289,14 +298,28 @@ def main():
         logger.info(f"Step {step}: Action: {results['actions'].round(4)}")
 
         # execute action
+        idx = 0
         for action in results["actions"]:
-            joints_status, gripper_status = galbot_control.execute_action(action)
-            logger.info(f"Step {step}: Executed action with joints status: {joints_status}, gripper status: {gripper_status}")
+            if idx >= 20:
+                continue
+            idx += 1
+            if action[5] >= 0.735:
+                action[5] = 0.735
+            galbot_control.execute_action(action)
+        
         action_records.append(results["actions"])
 
         # control frequency
         time.sleep(max(1, 1/DEPLOY_CONFIG["infer_freq"] - (time.time() - start_time)))
         step += 2
+    
+    # open gripper 
+    galbot_control.interface.set_gripper_status(
+        width_percent=GRIPPER_OPEN, 
+        speed=1.0, 
+        force=10, 
+        gripper="left_gripper"
+    )
 
     # post-processing: save records + reset robotic arm
     np.save(f"{DEPLOY_CONFIG['output_dir']}/action_records.npy", np.array(action_records))
@@ -312,7 +335,7 @@ def main():
     plt.savefig(f"{DEPLOY_CONFIG['output_dir']}/action_trajectory.png", dpi=97)
 
     # final reset
-    galbot_control.reset_pose()
+    # galbot_control.reset_pose()
     logger.info("Deployment script execution completed")
 
 
