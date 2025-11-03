@@ -850,7 +850,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
             # repo_id="/media/abc/Data/galbot_sps/sps_pick_blck_triangular_bracket_p2",
-            repo_id="/home/abc/Documents/DATA/ld_p1",
+            repo_id="/home/abc/Documents/DATA/ld_1_2",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),

@@ -57,6 +57,7 @@ print(*(get_config("pi0_galbot_low_mem_finetune").data.base_config.data_transfor
 DATA_CONFIG = get_config("pi0_galbot_low_mem_finetune").data.base_config
 
 MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1026/100000"
+MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1031/60000"
 
 norm_stats = _checkpoints.load_norm_stats(MODEL_PATH)
 default_prompt = "pick up the object and lift it up."
@@ -66,8 +67,8 @@ DEPLOY_CONFIG = {
     "is_pytorch": False,                                    # model type
     "device": "cuda",                                       # pi0
     "infer_freq": 15,                                        # Inference frequency (Hz)
-    "max_steps": 18,                                        # Maximum inference steps
-    "output_dir": "/home/abc/galbot_records/1",               # Record output directory
+    "max_steps": 50,                                        # Maximum inference steps
+    "output_dir": "/home/abc/galbot_records/5",               # Record output directory
     "input_transforms" : [
         *DATA_CONFIG.repack_transforms.inputs,
         _transforms.InjectDefaultPrompt(default_prompt),
@@ -187,7 +188,7 @@ class GalbotController:
         arm_joints = action[:7].tolist()
         arm_status = self.interface.set_arm_joint_angles(
             arm_joint_angles=arm_joints, 
-            speed=0.1, 
+            speed=1, 
             arm="left_arm", 
             asynchronous=True
         )
@@ -297,17 +298,26 @@ def main():
         logger.info(f"Step {step}: Inference time {infer_time:.2f}ms")
         logger.info(f"Step {step}: Action: {results['actions'].round(4)}")
 
-        # execute action
+        prev_action = None
         idx = 0
+        smoothing_factor = 0.4
+
         for action in results["actions"]:
             if idx >= 20:
                 continue
             idx += 1
-            if action[5] >= 0.735:
-                action[5] = 0.735
+
+            if action[5] >= 0.736:
+                action[5] = 0.736
+
+            if prev_action is not None:
+                for i in range(6):
+                    action[i] = prev_action[i] * (1 - smoothing_factor) + action[i] * smoothing_factor
+
             galbot_control.execute_action(action)
-        
-        action_records.append(results["actions"])
+
+            prev_action = action.copy()
+            action_records.append(action)
 
         # control frequency
         time.sleep(max(1, 1/DEPLOY_CONFIG["infer_freq"] - (time.time() - start_time)))
