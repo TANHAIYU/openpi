@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import torch
 from pathlib import Path
 import rospy
-import einops
 from sensor_msgs.msg import CompressedImage,JointState
 from cv_bridge import CvBridge
 import matplotlib.pyplot as plt
+import math
 from typing import Sequence, Dict, Any
 
 import logging
@@ -32,7 +32,13 @@ from openpi.training.config import TrainConfig, pi0_config, LeRobotGalbotDataCon
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 
-sys.path.append('/home/abc/dev/galbot_control_interface:/home/abc/dev/galbot_utils:$PYTHONPATH')  # Adjust path as needed
+extra_paths = [
+    "/home/abc/dev/galbot_control_interface",
+    "/home/abc/dev/galbot_utils"
+]
+for p in extra_paths:
+    if p not in sys.path:
+        sys.path.append(p)
 
 from galbot_control_interface import GalbotControlInterface
 
@@ -56,8 +62,12 @@ print(*(get_config("pi0_galbot_low_mem_finetune").data.base_config.data_transfor
 
 DATA_CONFIG = get_config("pi0_galbot_low_mem_finetune").data.base_config
 
+STEP_ACTION_HORIZON_MAX = 50
+STEP_ACTION_HORIZON_MIN = 5
+decay_rate = 3.0
+
 MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1026/100000"
-MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1031/60000"
+MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1031/70000"
 
 norm_stats = _checkpoints.load_norm_stats(MODEL_PATH)
 default_prompt = "pick up the object and lift it up."
@@ -66,9 +76,9 @@ DEPLOY_CONFIG = {
     "model_path": MODEL_PATH,  # model weights
     "is_pytorch": False,                                    # model type
     "device": "cuda",                                       # pi0
-    "infer_freq": 15,                                        # Inference frequency (Hz)
-    "max_steps": 50,                                        # Maximum inference steps
-    "output_dir": "/home/abc/galbot_records/5",               # Record output directory
+    "infer_freq": 20,                                       # Inference frequency (Hz)
+    "max_steps": 25,                                        # Maximum inference steps
+    "output_dir": "/home/abc/galbot_records/5",             # Record output directory
     "input_transforms" : [
         *DATA_CONFIG.repack_transforms.inputs,
         _transforms.InjectDefaultPrompt(default_prompt),
@@ -132,11 +142,21 @@ def state_callback(msg: JointState, state_name: str):
 
 def get_observation() -> Dict[str, Any]:
     """Construct observation dictionary required by OpenPI (matching Policy input format)"""
-    for cam in CAMERA_NAMES:
-        if CAMERA_IMAGES[cam] is None:
-            logging.error(f"No image received from camera {cam}")
+
+    missing = [cam for cam in CAMERA_NAMES if CAMERA_IMAGES.get(cam) is None]
+    if missing:
+        logging.warning(f"Missing camera images: {missing}. Skipping this observation.")
+        return None
+
+    
     left_arm_joints = STATE["/left_arm/joint_states"]
     left_gripper = STATE["/left_arm_gripper/joint_states"]
+    # check states
+    left_arm_joints = STATE.get("/left_arm/joint_states")
+    left_gripper = STATE.get("/left_arm_gripper/joint_states")
+    if left_arm_joints is None or left_gripper is None:
+        logging.warning("Missing joint state(s). Skipping this observation.")
+        return None
     
     # 3. Collect image data (convert to RGB to match model input)
     images = {
@@ -194,7 +214,7 @@ class GalbotController:
         )
         
         # gripper action (8th dimension, normalized to [0,1])
-        gripper_pos = np.clip((action[7]-0.01)/0.05, 0.0, 0.65)
+        gripper_pos = np.clip((action[7]-0.002)/0.058, 0.0, 0.65)
         gripper_status = self.interface.set_gripper_status(
             width_percent=gripper_pos, 
             speed=1.0, 
@@ -279,20 +299,26 @@ def main():
     # inference and control loop
     step = 1
     action_records = []
+
     while step < DEPLOY_CONFIG["max_steps"] and not rospy.is_shutdown():
         obs = get_observation()
         logger.info(f"Step {step}: Observation data acquired successfully")
 
-        # for cam, img in obs.items():
-        #     if cam in ["image", "wrist_image"]:
-        #         cv2.imwrite(
-        #             f"{DEPLOY_CONFIG['output_dir']}/obs_{cam}_step{step}.png",
-        #             cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # Convert back to BGR for saving
-        #         )
+        # 动态调整 STEP_ACTION_HORIZON：随 step 增大而减小
+        progress = step / DEPLOY_CONFIG["max_steps"]
+        # linear decreasing
+        # STEP_ACTION_HORIZON = int(
+        #     STEP_ACTION_HORIZON_MAX - (STEP_ACTION_HORIZON_MAX - STEP_ACTION_HORIZON_MIN) * progress
+        # )
+        # exp decreasing
+        STEP_ACTION_HORIZON = int(
+            STEP_ACTION_HORIZON_MIN + (STEP_ACTION_HORIZON_MAX - STEP_ACTION_HORIZON_MIN) * math.exp(-decay_rate * progress)
+        )
+        STEP_ACTION_HORIZON = max(STEP_ACTION_HORIZON_MIN, min(STEP_ACTION_HORIZON, STEP_ACTION_HORIZON_MAX))
+        logger.info(f"Step {step}: STEP_ACTION_HORIZON = {STEP_ACTION_HORIZON}")
 
         # perform inference with pi0 policy
         start_time = time.time()
-        # with torch.no_grad() if DEPLOY_CONFIG["is_pytorch"] else jax.disable_jit():
         results = policy.infer(obs) 
         infer_time = (time.time() - start_time) * 1001
         logger.info(f"Step {step}: Inference time {infer_time:.2f}ms")
@@ -302,10 +328,14 @@ def main():
         idx = 0
         smoothing_factor = 0.4
 
+        logger.info(f"-----------------------start execution {step}'s step actions------------------------")
         for action in results["actions"]:
-            if idx >= 20:
+            if idx >= STEP_ACTION_HORIZON:
                 continue
             idx += 1
+
+            if idx % 2 != 0:
+                continue  # Skip every other action for smoother motion
 
             if action[5] >= 0.736:
                 action[5] = 0.736
@@ -314,14 +344,21 @@ def main():
                 for i in range(6):
                     action[i] = prev_action[i] * (1 - smoothing_factor) + action[i] * smoothing_factor
 
+            start_time = time.time()
             galbot_control.execute_action(action)
+            execution_time = (time.time() - start_time) * 1001
+            logger.info(f"step {step}, idx {idx}: execution time {execution_time:.2f}ms")
 
             prev_action = action.copy()
-            action_records.append(action)
 
-        # control frequency
-        time.sleep(max(1, 1/DEPLOY_CONFIG["infer_freq"] - (time.time() - start_time)))
-        step += 2
+            action_records.append(results["actions"][:STEP_ACTION_HORIZON])
+
+            time.sleep(max(0.0, 
+                           1/DEPLOY_CONFIG["infer_freq"] - (time.time() - start_time)
+                           )
+                       )
+            step += 1
+        logger.info(f"-----------------------end execution {step}'s step actions------------------------")
     
     # open gripper 
     galbot_control.interface.set_gripper_status(
