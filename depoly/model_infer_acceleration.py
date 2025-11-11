@@ -129,6 +129,8 @@ class Pi0BinaryInferenceServer:
         import time
         t0 = time.time()
 
+        obs = load_message(1)
+
         # === input transformation ===
         inputs = self._input_transform(obs)
         # print(f"inputs: {inputs}")

@@ -6,6 +6,7 @@ import cv2
 import jax
 import jax.numpy as jnp
 import torch
+import json
 from pathlib import Path
 import rospy
 from sensor_msgs.msg import CompressedImage,JointState
@@ -14,6 +15,8 @@ import matplotlib.pyplot as plt
 import math
 from typing import Sequence, Dict, Any
 
+from joint_pulisher import ExternalDataJointPublisher
+import joint_pulisher
 import logging
 
 PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,12 +65,14 @@ print(*(get_config("pi0_galbot_low_mem_finetune").data.base_config.data_transfor
 
 DATA_CONFIG = get_config("pi0_galbot_low_mem_finetune").data.base_config
 
-STEP_ACTION_HORIZON_MAX = 50
+STEP_ACTION_HORIZON_MAX = 15
 STEP_ACTION_HORIZON_MIN = 5
 decay_rate = 3.0
 
-MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1026/100000"
-MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1031/70000"
+# MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1026/20000"
+# MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1031/70000"
+MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1106/5000"
+# MODEL_PATH = "/home/abc/Documents/ckpts/pi0/ld_1106/10000"
 
 norm_stats = _checkpoints.load_norm_stats(MODEL_PATH)
 default_prompt = "pick up the object and lift it up."
@@ -77,8 +82,8 @@ DEPLOY_CONFIG = {
     "is_pytorch": False,                                    # model type
     "device": "cuda",                                       # pi0
     "infer_freq": 20,                                       # Inference frequency (Hz)
-    "max_steps": 25,                                        # Maximum inference steps
-    "output_dir": "/home/abc/galbot_records/5",             # Record output directory
+    "max_steps": 200,                                        # Maximum inference steps
+    "output_dir": "/home/abc/galbot_records/",             # Record output directory
     "input_transforms" : [
         *DATA_CONFIG.repack_transforms.inputs,
         _transforms.InjectDefaultPrompt(default_prompt),
@@ -179,9 +184,67 @@ def get_observation() -> Dict[str, Any]:
 
 
 # -------------------------- Robotic Arm Control Wrapper --------------------------
+# UDP通信回调函数
+import socket
+
+def create_socket_callback(host: str, port: int, timeout: float = 5.0):
+    """
+    创建Socket通信回调函数
+    
+    参数:
+    - host: 目标主机
+    - port: 目标端口
+    - timeout: 连接超时时间(秒)
+    
+    返回:
+    - 回调函数和socket对象
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    
+    try:
+        sock.connect((host, port))
+        print(f"成功连接到机器人: {host}:{port}")
+    except Exception as e:
+        print(f"连接失败: {e}")
+        sock = None
+    
+    def socket_callback(point_index, joint_data, gripper_data):
+        if sock is None:
+            return False
+        
+        # 格式化数据为JSON
+        message = {
+            'timestamp': time.time(),
+            'index': point_index,
+            'joints': joint_data.tolist(),
+            'gripper': float(gripper_data)
+        }
+        
+        try:
+            # 发送数据
+            sock.send((json.dumps(message) + '\n').encode())
+            print(f"发送第 {point_index} 个关节点")
+            return True
+        except Exception as e:
+            print(f"发送失败: {e}")
+            return False
+    
+    return socket_callback, sock
+
+
+
 class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
+        self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)  # 10Hz, 最大队列100个点
+        socket_callback, sock = create_socket_callback('192.168.100.100', 12345)
+        self.start_pulish = False
+        if sock is not None:
+            self.publisher.set_callback(socket_callback)
+            print("Socket回调已设置")
+        else:
+            print("警告: Socket连接失败,将使用默认打印模式")
         self.logger = logger
         # self.reset_pose()
 
@@ -222,6 +285,20 @@ class GalbotController:
             gripper="left_gripper"
         )
         return arm_status, gripper_status
+    
+    def execute_action_realtime(self, actions: np.ndarray):
+        if isinstance(actions, np.ndarray):
+            actions[:, 7] = np.maximum(actions[:, 7] - 0.004, 0.0)
+            actions[:, 7] = np.minimum(actions[:, 7], 0.045)
+            actions[:, 5] = np.maximum(actions[:, 5], 0.736)  # limit wrist joint
+
+
+        self.publisher.add_joints(actions)
+
+        if not self.start_pulish:
+            self.publisher.start(loop=False, async_mode=True)
+            self.start_pulish = True
+        
 
 def main():
     # initialize logger and output directory
@@ -287,7 +364,7 @@ def main():
         lambda msg, c="/left_arm_gripper/joint_states": state_callback(msg, c),
         queue_size=2
     )
-    time.sleep(1)  # waiting for subscriptions to be initialized
+    time.sleep(2)  # waiting for subscriptions to be initialized
 
     # load pi0 model and create policy
     logger.info("start load pi0 model from pretrained checkpoints...")
@@ -311,62 +388,36 @@ def main():
         #     STEP_ACTION_HORIZON_MAX - (STEP_ACTION_HORIZON_MAX - STEP_ACTION_HORIZON_MIN) * progress
         # )
         # exp decreasing
-        STEP_ACTION_HORIZON = int(
-            STEP_ACTION_HORIZON_MIN + (STEP_ACTION_HORIZON_MAX - STEP_ACTION_HORIZON_MIN) * math.exp(-decay_rate * progress)
-        )
-        STEP_ACTION_HORIZON = max(STEP_ACTION_HORIZON_MIN, min(STEP_ACTION_HORIZON, STEP_ACTION_HORIZON_MAX))
-        logger.info(f"Step {step}: STEP_ACTION_HORIZON = {STEP_ACTION_HORIZON}")
+
+        # DECAY_RATE = 10.0
+        # STEP_ACTION_HORIZON = int(
+        #     STEP_ACTION_HORIZON_MAX -
+        #     (STEP_ACTION_HORIZON_MAX - STEP_ACTION_HORIZON_MIN) * (1 - math.exp(-DECAY_RATE * progress))
+        # )
+        # STEP_ACTION_HORIZON = max(STEP_ACTION_HORIZON_MIN, min(STEP_ACTION_HORIZON, STEP_ACTION_HORIZON_MAX))
+        # logger.info(f"Step {step}: STEP_ACTION_HORIZON = {STEP_ACTION_HORIZON}")
 
         # perform inference with pi0 policy
         start_time = time.time()
         results = policy.infer(obs) 
         infer_time = (time.time() - start_time) * 1001
         logger.info(f"Step {step}: Inference time {infer_time:.2f}ms")
-        logger.info(f"Step {step}: Action: {results['actions'].round(4)}")
+        if step == 1:
+            galbot_control.publisher.start(loop=False, async_mode=True)
+        # logger.info(f"Step {step}: Action: {results['actions'].round(4)}")
 
-        prev_action = None
-        idx = 0
-        smoothing_factor = 0.4
+        # prev_action = None
+        # idx = 0
+        # smoothing_factor = 0.4
 
         logger.info(f"-----------------------start execution {step}'s step actions------------------------")
-        for action in results["actions"]:
-            if idx >= STEP_ACTION_HORIZON:
-                continue
-            idx += 1
 
-            if idx % 2 != 0:
-                continue  # Skip every other action for smoother motion
-
-            if action[5] >= 0.736:
-                action[5] = 0.736
-
-            if prev_action is not None:
-                for i in range(6):
-                    action[i] = prev_action[i] * (1 - smoothing_factor) + action[i] * smoothing_factor
-
-            start_time = time.time()
-            galbot_control.execute_action(action)
-            execution_time = (time.time() - start_time) * 1001
-            logger.info(f"step {step}, idx {idx}: execution time {execution_time:.2f}ms")
-
-            prev_action = action.copy()
-
-            action_records.append(results["actions"][:STEP_ACTION_HORIZON])
-
-            time.sleep(max(0.0, 
-                           1/DEPLOY_CONFIG["infer_freq"] - (time.time() - start_time)
-                           )
-                       )
-            step += 1
+        galbot_control.execute_action_realtime(results["actions"][:10])
+        # time.sleep(STEP_ACTION_HORIZON * 0.06 + 0.3)
+        time.sleep(0.5)
+        step += 1
         logger.info(f"-----------------------end execution {step}'s step actions------------------------")
-    
-    # open gripper 
-    galbot_control.interface.set_gripper_status(
-        width_percent=GRIPPER_OPEN, 
-        speed=1.0, 
-        force=10, 
-        gripper="left_gripper"
-    )
+
 
     # post-processing: save records + reset robotic arm
     np.save(f"{DEPLOY_CONFIG['output_dir']}/action_records.npy", np.array(action_records))
