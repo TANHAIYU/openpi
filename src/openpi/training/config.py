@@ -850,7 +850,7 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/ld_20251025_1115",
+            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_merged_1115_1117_1118_augumentation",
             # repo_id="/home/data_sda/lerobot/place_on_tray_251114_1115",
             # repo_id="/home/data_sdd/data/ld_lerobot/ld_three_camera",
             base_config=DataConfig(prompt_from_task=True),
