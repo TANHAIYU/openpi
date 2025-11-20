@@ -458,7 +458,8 @@ class LeRobotGalbotDataConfig(DataConfigFactory):
                 _transforms.RepackTransform(
                     {
                         "image": "observation.images.front_head_camera_left_color",
-                        "wrist_image": "observation.images.left_arm_camera_color",
+                        "wrist_image_left": "observation.images.left_arm_camera_color",
+                        "wrist_image_right": "observation.images.right_arm_camera_color",
                         "state": "observation.state",
                         "actions": "action",
                         "prompt": "prompt",
