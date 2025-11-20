@@ -647,17 +647,17 @@ class TrainConfig:
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
-    checkpoint_base_dir: str = "./checkpoints"
+    checkpoint_base_dir: str = "/home/data_sdd/weights/pi0_ckpt/galbot_ld"
 
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
-    batch_size: int = 4
+    batch_size: int = 32
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
     # Number of train steps (batches) to run.
-    num_train_steps: int = 30_000
+    num_train_steps: int = 225_000
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -849,13 +849,14 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            # repo_id="/media/abc/Data/galbot_sps/sps_pick_blck_triangular_bracket_p2",
-            repo_id="/home/abc/Documents/DATA/ld_1_2",
+            repo_id="/home/data_sdd/data/ld_lerobot/ld_20251025_1115",
+            # repo_id="/home/data_sda/lerobot/place_on_tray_251114_1115",
+            # repo_id="/home/data_sdd/data/ld_lerobot/ld_three_camera",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
-        num_train_steps=30_000,
+        num_train_steps=225_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
