@@ -24,6 +24,9 @@ def _parse_image(image) -> np.ndarray:
         image = (255 * image).astype(np.uint8)
     if image.shape[0] == 3:
         image = einops.rearrange(image, "c h w -> h w c")
+    # convert RGB to BGR
+    image = image[..., ::-1]  # reverse last channel
+
     return image
 
 
