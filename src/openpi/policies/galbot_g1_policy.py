@@ -53,17 +53,17 @@ class GalbotInputs(transforms.DataTransformFn):
         # and two wrist views (left and right). If your dataset does not have a particular type
         # of image, e.g. wrist images, you can comment it out here and replace it with zeros like we do for the
         # right wrist image below.
-        base_image = _parse_image(data["image"])
-        left_wrist_image = _parse_image(data["wrist_image_left"])
-        right_wrist_image = _parse_image(data["wrist_image_right"])
+        # base_image = _parse_image(data["image"])
+        # left_wrist_image = _parse_image(data["wrist_image_left"])
+        # right_wrist_image = _parse_image(data["wrist_image_right"])
 
         # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
             "state": data["state"],
             "image": {
-                "base_0_rgb": base_image,
-                "left_wrist_0_rgb": left_wrist_image,
-                "right_wrist_0_rgb": right_wrist_image,
+                # "base_0_rgb": base_image,
+                # "left_wrist_0_rgb": left_wrist_image,
+                # "right_wrist_0_rgb": right_wrist_image,
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
