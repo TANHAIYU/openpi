@@ -457,9 +457,9 @@ class LeRobotGalbotDataConfig(DataConfigFactory):
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "image": "observation.images.front_head_camera_left_color",
-                        "wrist_image_left": "observation.images.left_arm_camera_color",
-                        "wrist_image_right": "observation.images.right_arm_camera_color",
+                        # "image": "observation.images.front_head_camera_left_color",
+                        # "wrist_image_left": "observation.images.left_arm_camera_color",
+                        # "wrist_image_right": "observation.images.right_arm_camera_color",
                         "state": "observation.state",
                         "actions": "action",
                         "prompt": "prompt",
@@ -656,7 +656,7 @@ class TrainConfig:
     batch_size: int = 128
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
-    num_workers: int = 10
+    num_workers: int = 16
     # Number of train steps (batches) to run.
     num_train_steps: int = 225_000
 
@@ -850,7 +850,7 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_merged_1115_1117_1118_augumentation",
+            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_1115_1124_augmentation",
             # repo_id="/home/data_sda/lerobot/place_on_tray_251114_1115",
             # repo_id="/home/data_sdd/data/ld_lerobot/ld_three_camera",
             base_config=DataConfig(prompt_from_task=True),
