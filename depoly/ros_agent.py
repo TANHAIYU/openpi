@@ -96,8 +96,9 @@ def make_observation() -> dict | None:
     obs = {
         "state": joint_state,             # numpy.ndarray
         "image": images["head"],          # numpy.ndarray
-        "wrist_image": images["left_arm"],# numpy.ndarray
-        "prompt": "pick up the object and lift it up."
+        "wrist_image_left": images["left_arm"],# numpy.ndarray
+        "wrist_image_right": images["right_arm"], # numpy.ndarray
+        "prompt": "place the spider board in the designated position."
     }
 
     return obs
@@ -158,7 +159,7 @@ class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
         self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)  # 10Hz, 最大队列100个点
-        socket_callback, sock = create_socket_callback('192.168.100.88', 12345)
+        socket_callback, sock = create_socket_callback('192.168.100.100', 12345)
         self.start_pulish = False
         if sock is not None:
             self.publisher.set_callback(socket_callback)
@@ -310,7 +311,7 @@ def run_inference_loop(policy_client):
         # 3. 执行动作
         # ------------------------------
         actions = np.array(result["actions"])
-        controller.execute_action_realtime(actions[:10])
+        controller.execute_action_realtime(actions[:15])
 
         time.sleep(0.5)
         rospy.loginfo(f"---- executing step {step} actions ----")

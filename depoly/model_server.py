@@ -16,6 +16,7 @@ class EnvMode(enum.Enum):
 
     LD_P1 = "ld_p1"
     LD_P1_2 = "ld_p1_2"
+    LD_XINQU = "ld_xinqu"
     DROID = "droid"
     LIBERO = "libero"
 
@@ -40,7 +41,7 @@ class Args:
     """Arguments for the serve_policy script."""
 
     # Environment to serve the policy for. This is only used when serving default policies.
-    env: EnvMode = EnvMode.LD_P1_2
+    env: EnvMode = EnvMode.LD_XINQU
 
     # If provided, will be used in case the "prompt" key is not present in the data, or if the model doesn't have a default
     # prompt.
@@ -64,6 +65,10 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LD_P1_2: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
         dir="/home/abc/Documents/ckpts/pi0/ld_1106/5000",
+    ),
+    EnvMode.LD_XINQU: Checkpoint(
+        config="pi0_galbot_low_mem_finetune",
+        dir="/home/abc/Documents/ckpts/pi0/galbot_ld_3_camera_with_aug/40000",
     ),
 }
 
