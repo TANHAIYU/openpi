@@ -10,16 +10,15 @@ import cv2
 import rospy
 import websocket
 from pathlib import Path
+from enum import Enum, auto  # [新增] 引入枚举
 from cv_bridge import CvBridge
 from openpi_client import msgpack_numpy
 from sensor_msgs.msg import CompressedImage, JointState
 from galbot_control_interface import GalbotControlInterface
 
-
 from joint_pulisher import ExternalDataJointPublisher
 import joint_pulisher
 import logging
-
 
 # ---------------------- CONFIG ----------------------
 CAMERA_NAMES = ["head", "left_arm", "right_arm"]
@@ -41,6 +40,29 @@ DEPLOY_CONFIG = {
 
 STEP_ACTION_HORIZON_MAX = 50
 STEP_ACTION_HORIZON_MIN = 5
+
+class TaskStage(Enum):
+    PLACING = auto()
+    PLACED = auto()
+    FAILED = auto() # this state is reserved for future use, which need be provided by VLM's spatial reasoning
+
+class TaskStateMachine:
+    def __init__(self):
+        self.current_state = TaskStage.PLACING
+        self.gripper_threshold = 0.045 # gripper open threshold
+
+    def update(self, actions: np.ndarray):
+        if self.current_state == TaskStage.PLACING:
+            last_gripper_val = actions[-1, 7]
+            if last_gripper_val > self.gripper_threshold:
+                rospy.loginfo(f"State Transition: PICKING -> PLACED (Val: {last_gripper_val:.4f})")
+                self.current_state = TaskStage.PLACED
+
+    def is_placed(self) -> bool:
+        return self.current_state == TaskStage.PLACED
+
+    def get_state_name(self) -> str:
+        return self.current_state.name
 
 
 # ---------------------- ROS 数据缓存 ----------------------
@@ -69,7 +91,6 @@ def state_callback(msg: JointState, state_name: str):
 
 def make_observation() -> dict | None:
     """构造符合 OpenPI 输入格式的 obs, 保持 numpy.ndarray 类型"""
-
     missing_cams = [cam for cam in CAMERA_NAMES if CAMERA_IMAGES.get(cam) is None]
     if missing_cams:
         rospy.logwarn(f"Missing camera images: {missing_cams}. Skipping this observation.")
@@ -89,10 +110,8 @@ def make_observation() -> dict | None:
             rospy.logerr(f"Error converting camera {cam} image to RGB: {e}")
             return None
 
-    # 4️⃣ 拼接关节状态（7 左臂 + 1 gripper 或更多）
     joint_state = np.concatenate([np.array(left_arm).flatten(), np.array(gripper).flatten()])
 
-    # 5️⃣ 构造 observation 字典（保持 numpy.ndarray 类型）
     obs = {
         "state": joint_state,             # numpy.ndarray
         "image": images["head"],          # numpy.ndarray
@@ -105,21 +124,9 @@ def make_observation() -> dict | None:
 
 
 # -------------------------- Robotic Arm Control Wrapper --------------------------
-# UDP通信回调函数
 import socket
 
 def create_socket_callback(host: str, port: int, timeout: float = 5.0):
-    """
-    创建Socket通信回调函数
-    
-    参数:
-    - host: 目标主机
-    - port: 目标端口
-    - timeout: 连接超时时间(秒)
-    
-    返回:
-    - 回调函数和socket对象
-    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     
@@ -134,7 +141,6 @@ def create_socket_callback(host: str, port: int, timeout: float = 5.0):
         if sock is None:
             return False
         
-        # 格式化数据为JSON
         message = {
             'timestamp': time.time(),
             'index': point_index,
@@ -143,9 +149,7 @@ def create_socket_callback(host: str, port: int, timeout: float = 5.0):
         }
         
         try:
-            # 发送数据
             sock.send((json.dumps(message) + '\n').encode())
-            print(f"发送第 {point_index} 个关节点")
             return True
         except Exception as e:
             print(f"发送失败: {e}")
@@ -158,7 +162,7 @@ def create_socket_callback(host: str, port: int, timeout: float = 5.0):
 class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
-        self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)  # 10Hz, 最大队列100个点
+        self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)
         socket_callback, sock = create_socket_callback('192.168.100.100', 12345)
         self.start_pulish = False
         if sock is not None:
@@ -167,7 +171,6 @@ class GalbotController:
         else:
             print("警告: Socket连接失败,将使用默认打印模式")
         self.logger = logger
-        # self.reset_pose()
 
     def reset_pose(self):
         self.interface.set_arm_joint_angles(
@@ -178,41 +181,20 @@ class GalbotController:
         )
         time.sleep(2)
     
-    def open_gripper(self):
-        self.interface.set_gripper_status(
-            width_percent=GRIPPER_OPEN, 
-            speed=1.0, 
-            force=10, 
-            gripper="left_gripper"
-        )
-
-    def execute_action(self, action: np.ndarray):
-        """Execute actions output by OpenPI (7 joints + 1 gripper)"""
-        # joint actions (first 7 dimensions)
-        arm_joints = action[:7].tolist()
-        arm_status = self.interface.set_arm_joint_angles(
-            arm_joint_angles=arm_joints, 
-            speed=1, 
-            arm="left_arm", 
-            asynchronous=True
-        )
-        
-        # gripper action (8th dimension, normalized to [0,1])
-        gripper_pos = np.clip((action[7]-0.002)/0.058, 0.0, 0.65)
-        gripper_status = self.interface.set_gripper_status(
-            width_percent=gripper_pos, 
-            speed=1.0, 
-            force=11, 
-            gripper="left_gripper"
-        )
-        return arm_status, gripper_status
-    
-    def execute_action_realtime(self, actions: np.ndarray):
+    def execute_action_realtime(self, actions: np.ndarray, is_placed_state: bool = False):
+        """
+        根据当前状态执行动作
+        :param actions: 模型输出的动作
+        :param is_placed_state: 当前是否处于 PLACED 状态 (由状态机决定)
+        """
         if isinstance(actions, np.ndarray):
-            actions[:, 7] = np.maximum(actions[:, 7] - 0.004, 0.0)
-            actions[:, 7] = np.minimum(actions[:, 7], 0.045)
-            # actions[:, 5] = np.maximum(actions[:, 5], 0.736)  # limit wrist joint
-
+            if not is_placed_state:
+                # PLACING status
+                actions[:, 7] = np.maximum(actions[:, 7] - 0.004, 0.0)
+                actions[:, 7] = np.minimum(actions[:, 7], 0.065)
+            else:
+                # PLACED status, keep gripper status
+                actions[:, 7] = 0.045
 
         self.publisher.add_joints(actions)
 
@@ -234,27 +216,19 @@ class WebSocketPolicyClient:
         rospy.loginfo("Connected to model server ✅")
 
     def infer(self, obs: dict):
-        """发送 obs 到 model_server, 并返回推理结果"""
         try:
-            # msgpack 序列化
             payload = msgpack_numpy.packb(obs, use_bin_type=True)
             self.ws.send(payload, opcode=websocket.ABNF.OPCODE_BINARY)
-
-            # 接收二进制消息
             result = self.ws.recv()
 
-            # 确保 bytes 类型
             if isinstance(result, bytes):
                 result = msgpack_numpy.unpackb(result, raw=False)
             else:
-                rospy.logerr(f"Unexpected result type: {type(result)}, result: {result}")
+                rospy.logerr(f"Unexpected result type: {type(result)}")
                 return None
-
             return result
-
         except Exception as e:
             rospy.logerr(f"Inference error: {e}")
-            # 尝试重连
             try:
                 self.connect()
             except Exception as e2:
@@ -272,6 +246,10 @@ def run_inference_loop(policy_client):
     logging.getLogger().setLevel(logging.INFO)
 
     controller = GalbotController(logger)
+
+    # task state machine, initialize to PLACING state
+    task_sm = TaskStateMachine()
+    
     step = 1
 
     while step < DEPLOY_CONFIG["max_steps"] and not rospy.is_shutdown():
@@ -282,7 +260,7 @@ def run_inference_loop(policy_client):
             continue
 
         # ------------------------------
-        # 1. 先 flush 掉 WebSocket 的旧消息（关键）
+        # 1. 先 flush 掉 WebSocket 的旧消息
         # ------------------------------
         try:
             policy_client.ws.settimeout(0.001)
@@ -294,9 +272,6 @@ def run_inference_loop(policy_client):
         finally:
             policy_client.ws.settimeout(2)
 
-        # ------------------------------
-        # 2. 正式开始计时 + 调 infer
-        # ------------------------------
         start_time = time.time()
         result = policy_client.infer(obs)
 
@@ -307,18 +282,17 @@ def run_inference_loop(policy_client):
         infer_time = (time.time() - start_time) * 1000
         rospy.loginfo(f"Inference latency: {infer_time:.1f} ms")
 
-        # ------------------------------
-        # 3. 执行动作
-        # ------------------------------
         actions = np.array(result["actions"])
-        controller.execute_action_realtime(actions[:15])
+        
+        task_sm.update(actions)
+        
+        controller.execute_action_realtime(actions[:15], is_placed_state=task_sm.is_placed())
 
         time.sleep(0.5)
-        rospy.loginfo(f"---- executing step {step} actions ----")
+        rospy.loginfo(f"---- executing step {step} | State: {task_sm.get_state_name()} ----")
         step += 1
 
 
-# ---------------------- 主函数 ----------------------
 def main():
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
     rospy.init_node("openpi_ros_agent", anonymous=True)

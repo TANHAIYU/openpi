@@ -68,7 +68,7 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     ),
     EnvMode.LD_XINQU: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
-        dir="/home/abc/Documents/ckpts/pi0/galbot_ld_3_camera_with_aug/40000",
+        dir="/home/abc/Documents/ckpts/galbot_ld_1126_6k/20000",
     ),
 }
 
