@@ -1,0 +1,35 @@
+# config.yaml
+
+# ---------------- ROS & 传感器配置 ----------------
+ros:
+  camera_names: ["head", "left_arm", "right_arm"]
+
+robot:
+  ip: "192.168.100.100"
+  port: 12345
+  
+  reset_joints: [
+    1.0093586444854736, -1.3492074012756348, -1.134690761566162,
+    -1.9343969821929932, -0.1084338054060936, 0.2987898588180542, 0.3599584102630615
+  ]
+
+  # 夹爪参数
+  gripper:
+    open_val: 0.65       # 物理最大张开值
+    close_val: 0.0       # 物理闭合值
+    threshold: 0.045     # 状态机：判定为 "已张开/放置" 的阈值
+    action_limit: 0.065  # 动作映射时的最大值限制
+    offset: 0.004        # 动作映射时的微调偏移量 (Magic Number extraction)
+    force: 11            # 夹持力度
+
+# ---------------- client inference config ----------------
+inference:
+  ws_url: "ws://127.0.0.1:8000"
+  max_steps: 200
+  infer_freq: 20
+  action_horizon: 15
+  
+  prompt: "place the spider board in the designated position."
+  
+  # 数据记录路径
+  output_dir: "/home/abc/galbot_records/5"

@@ -5,57 +5,39 @@ import time
 import math
 import json
 import logging
+import argparse
+import yaml
 import numpy as np
 import cv2
 import rospy
 import websocket
+import socket
 from pathlib import Path
-from enum import Enum, auto  # [新增] 引入枚举
+from enum import Enum, auto
 from cv_bridge import CvBridge
 from openpi_client import msgpack_numpy
 from sensor_msgs.msg import CompressedImage, JointState
 from galbot_control_interface import GalbotControlInterface
 
 from joint_pulisher import ExternalDataJointPublisher
-import joint_pulisher
-import logging
 
-# ---------------------- CONFIG ----------------------
-CAMERA_NAMES = ["head", "left_arm", "right_arm"]
-GRIPPER_OPEN = 0.65
-GRIPPER_CLOSE = 0.0
-DECAY_RATE = 3.0
-
-LEFT_ARM_RESET = [
-    1.0093586444854736, -1.3492074012756348, -1.134690761566162,
-    -1.9343969821929932, -0.1084338054060936, 0.2987898588180542, 0.3599584102630615
-]
-
-DEPLOY_CONFIG = {
-    "max_steps": 200,
-    "infer_freq": 20,
-    "output_dir": "/home/abc/galbot_records/5",
-    "ws_url": "ws://127.0.0.1:8000"
-}
-
-STEP_ACTION_HORIZON_MAX = 50
-STEP_ACTION_HORIZON_MIN = 5
+CFG = {}
 
 class TaskStage(Enum):
     PLACING = auto()
     PLACED = auto()
-    FAILED = auto() # this state is reserved for future use, which need be provided by VLM's spatial reasoning
+    FAILED = auto()
 
 class TaskStateMachine:
-    def __init__(self):
+    def __init__(self, threshold):
         self.current_state = TaskStage.PLACING
-        self.gripper_threshold = 0.045 # gripper open threshold
+        self.gripper_threshold = threshold 
 
     def update(self, actions: np.ndarray):
         if self.current_state == TaskStage.PLACING:
             last_gripper_val = actions[-1, 7]
             if last_gripper_val > self.gripper_threshold:
-                rospy.loginfo(f"State Transition: PICKING -> PLACED (Val: {last_gripper_val:.4f})")
+                rospy.loginfo(f"State Transition: PLACING -> PLACED (Val: {last_gripper_val:.4f})")
                 self.current_state = TaskStage.PLACED
 
     def is_placed(self) -> bool:
@@ -65,9 +47,9 @@ class TaskStateMachine:
         return self.current_state.name
 
 
-# ---------------------- ROS 数据缓存 ----------------------
 BRIDGE = CvBridge()
-CAMERA_IMAGES = {k: None for k in CAMERA_NAMES}
+# 注意：CAMERA_IMAGES 的键将在 load_config 后初始化
+CAMERA_IMAGES = {} 
 STATE = {
     "/left_arm/joint_states": None,
     "/left_arm_gripper/joint_states": None
@@ -90,8 +72,10 @@ def state_callback(msg: JointState, state_name: str):
 
 
 def make_observation() -> dict | None:
-    """构造符合 OpenPI 输入格式的 obs, 保持 numpy.ndarray 类型"""
-    missing_cams = [cam for cam in CAMERA_NAMES if CAMERA_IMAGES.get(cam) is None]
+    """构造符合 OpenPI 输入格式的 obs"""
+    camera_names = CFG['ros']['camera_names']
+    
+    missing_cams = [cam for cam in camera_names if CAMERA_IMAGES.get(cam) is None]
     if missing_cams:
         rospy.logwarn(f"Missing camera images: {missing_cams}. Skipping this observation.")
         return None
@@ -103,7 +87,7 @@ def make_observation() -> dict | None:
         return None
 
     images = {}
-    for cam in CAMERA_NAMES:
+    for cam in camera_names:
         try:
             images[cam] = cv2.cvtColor(CAMERA_IMAGES[cam], cv2.COLOR_BGR2RGB)
         except Exception as e:
@@ -113,19 +97,17 @@ def make_observation() -> dict | None:
     joint_state = np.concatenate([np.array(left_arm).flatten(), np.array(gripper).flatten()])
 
     obs = {
-        "state": joint_state,             # numpy.ndarray
-        "image": images["head"],          # numpy.ndarray
-        "wrist_image_left": images["left_arm"],# numpy.ndarray
-        "wrist_image_right": images["right_arm"], # numpy.ndarray
-        "prompt": "place the spider board in the designated position."
+        "state": joint_state,             
+        "image": images["head"],          
+        "wrist_image_left": images["left_arm"],
+        "wrist_image_right": images["right_arm"],
+        "prompt": CFG['inference']['prompt']
     }
 
     return obs
 
 
 # -------------------------- Robotic Arm Control Wrapper --------------------------
-import socket
-
 def create_socket_callback(host: str, port: int, timeout: float = 5.0):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -163,7 +145,10 @@ class GalbotController:
     def __init__(self, logger):
         self.interface = GalbotControlInterface(log_level="error")
         self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)
-        socket_callback, sock = create_socket_callback('192.168.100.100', 12345)
+        
+        robot_cfg = CFG['robot']
+        socket_callback, sock = create_socket_callback(robot_cfg['ip'], robot_cfg['port'])
+        
         self.start_pulish = False
         if sock is not None:
             self.publisher.set_callback(socket_callback)
@@ -174,7 +159,7 @@ class GalbotController:
 
     def reset_pose(self):
         self.interface.set_arm_joint_angles(
-            arm_joint_angles=LEFT_ARM_RESET, 
+            arm_joint_angles=CFG['robot']['reset_joints'], 
             speed=1.0, 
             arm="left_arm", 
             asynchronous=True
@@ -182,19 +167,19 @@ class GalbotController:
         time.sleep(2)
     
     def execute_action_realtime(self, actions: np.ndarray, is_placed_state: bool = False):
-        """
-        根据当前状态执行动作
-        :param actions: 模型输出的动作
-        :param is_placed_state: 当前是否处于 PLACED 状态 (由状态机决定)
-        """
+        gripper_cfg = CFG['robot']['gripper']
+        offset = gripper_cfg['offset']
+        max_limit = gripper_cfg['action_limit']
+        threshold = gripper_cfg['threshold']
+
         if isinstance(actions, np.ndarray):
             if not is_placed_state:
-                # PLACING status
-                actions[:, 7] = np.maximum(actions[:, 7] - 0.004, 0.0)
-                actions[:, 7] = np.minimum(actions[:, 7], 0.065)
+                # PLACING status: Apply offset and clip
+                actions[:, 7] = np.maximum(actions[:, 7] - offset, 0.0)
+                actions[:, 7] = np.minimum(actions[:, 7], max_limit)
             else:
-                # PLACED status, keep gripper status
-                actions[:, 7] = 0.045
+                # PLACED status: Lock gripper
+                actions[:, 7] = threshold # 或者使用配置中的特定锁定值
 
         self.publisher.add_joints(actions)
 
@@ -247,21 +232,20 @@ def run_inference_loop(policy_client):
 
     controller = GalbotController(logger)
 
-    # task state machine, initialize to PLACING state
-    task_sm = TaskStateMachine()
+    task_sm = TaskStateMachine(threshold=CFG['robot']['gripper']['threshold'])
     
     step = 1
+    max_steps = CFG['inference']['max_steps']
+    action_horizon = CFG['inference']['action_horizon']
 
-    while step < DEPLOY_CONFIG["max_steps"] and not rospy.is_shutdown():
+    while step < max_steps and not rospy.is_shutdown():
         time.sleep(0.1)
         obs = make_observation()
         if obs is None:
             time.sleep(0.05)
             continue
 
-        # ------------------------------
-        # 1. 先 flush 掉 WebSocket 的旧消息
-        # ------------------------------
+        # Flush WebSocket, avoid use updated actions
         try:
             policy_client.ws.settimeout(0.001)
             while True:
@@ -286,19 +270,45 @@ def run_inference_loop(policy_client):
         
         task_sm.update(actions)
         
-        controller.execute_action_realtime(actions[:15], is_placed_state=task_sm.is_placed())
+        controller.execute_action_realtime(actions[:action_horizon], is_placed_state=task_sm.is_placed())
 
         time.sleep(0.5)
         rospy.loginfo(f"---- executing step {step} | State: {task_sm.get_state_name()} ----")
         step += 1
 
 
+def load_config(config_path):
+    if not os.path.exists(config_path):
+        rospy.logerr(f"Configuration file not found: {config_path}")
+        sys.exit(1)
+    
+    with open(config_path, 'r') as f:
+        try:
+            config = yaml.safe_load(f)
+            rospy.loginfo(f"Loaded configuration from {config_path}")
+            return config
+        except yaml.YAMLError as exc:
+            rospy.logerr(f"Error parsing YAML: {exc}")
+            sys.exit(1)
+
 def main():
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
     rospy.init_node("openpi_ros_agent", anonymous=True)
+    
+    parser = argparse.ArgumentParser(description="OpenPI ROS Agent")
+    parser.add_argument("-c", "--config", type=str, default="ld_depoly_config.yaml", help="Path to config file")
+    args = parser.parse_args()
+    
+    global CFG
+    CFG = load_config(args.config)
+
+    for cam in CFG['ros']['camera_names']:
+        CAMERA_IMAGES[cam] = None
+
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 
     rospy.loginfo("Starting OpenPI ROS Agent with WebSocket Model Server...")
-    for cam in CAMERA_NAMES:
+    
+    for cam in CFG['ros']['camera_names']:
         topic = f"/cam/{cam}/wrist/color/image_raw/compressed" if "arm" in cam else f"/cam/{cam}/color/image_raw/compressed"
         rospy.Subscriber(topic, CompressedImage, lambda msg, c=cam: camera_callback(msg, c), queue_size=1)
         rospy.loginfo(f"Subscribed to {topic}")
@@ -309,7 +319,8 @@ def main():
                      lambda msg, s="/left_arm_gripper/joint_states": state_callback(msg, s), queue_size=1)
 
     time.sleep(1)
-    client = WebSocketPolicyClient(DEPLOY_CONFIG["ws_url"])
+    
+    client = WebSocketPolicyClient(CFG['inference']['ws_url'])
     run_inference_loop(client)
 
 
