@@ -29,6 +29,9 @@ import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
+import einops, os
+import numpy as np
+from PIL import Image
 
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
@@ -98,6 +101,10 @@ class DataConfig:
     # Path to the data filter file for DROID dataset
     filter_dict_path: str | None = None
 
+    # image crop param: start_px, start_py, height, weight
+    head_img_crop: list | None = dataclasses.field(default_factory=lambda: [150, 110, 450, 800])  # raw: 0, 0, 720, 1280
+    left_img_crop: list | None = dataclasses.field(default_factory=lambda: [80, 80, 270, 480])    # raw: 0, 0, 360, 640
+    right_img_crop: list | None = dataclasses.field(default_factory=lambda: [0, 50, 270, 480])   # raw: 0, 0, 360, 640
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -433,6 +440,111 @@ class LeRobotRoboTwinDataConfig(DataConfigFactory):
             action_sequence_keys=("action",),
         )
 
+@dataclasses.dataclass(frozen=True)
+class GalbotInputs(_transforms.DataTransformFn):
+    """
+    This class is used to convert inputs to the model to the expected format. It is used for both training and inference.
+
+    For your own dataset, you can copy this class and modify the keys based on the comments below to pipe
+    the correct elements of your dataset into the model.
+    """
+
+    # Determines which model will be used.
+    # Do not change this for your own dataset.
+    # from openpi.training.config import DataConfig
+    model_type: _model.ModelType
+    data_config: DataConfig
+
+    @staticmethod
+    def crop_img(img, crop_config):
+        if img.shape[0] == 3:
+            return img[:, crop_config[0]:crop_config[0]+crop_config[2], crop_config[1]:crop_config[1]+crop_config[3]]
+        else:
+            return img[crop_config[0]:crop_config[0]+crop_config[2], crop_config[1]:crop_config[1]+crop_config[3], :]
+        
+    def _parse_image(self, image) -> np.ndarray:
+        image = np.asarray(image)
+        if np.issubdtype(image.dtype, np.floating):
+            image = (255 * image).astype(np.uint8)
+        if image.shape[0] == 3:
+            image = einops.rearrange(image, "c h w -> h w c")
+        # convert RGB to BGR
+        image = image[..., ::-1]  # reverse last channel
+
+        return image
+    
+    # 保存图像的辅助函数
+    @staticmethod
+    def save_image(img_array, save_path):
+        """将numpy数组格式的图像保存为文件"""
+        # 如果图像是CHW格式（如PyTorch张量），转为HWC
+        if len(img_array.shape) == 3 and img_array.shape[0] in [1, 3]:
+            img_array = np.transpose(img_array, (1, 2, 0))
+        # 归一化到0-255（如果图像是浮点型）
+        if img_array.dtype == np.float32 or img_array.dtype == np.float64:
+            img_array = (img_array * 255).astype(np.uint8)
+        # 保存图像
+        img = Image.fromarray(img_array)
+        img.save(save_path)
+
+
+    def __call__(self, data: dict) -> dict:
+        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
+        # stores as float32 (C,H,W), gets skipped for policy inference.
+        # Keep this for your own dataset, but if your dataset stores the images
+        # in a different key than "observation/image" or "observation/wrist_image",
+        # you should change it below.
+        # Pi0 models support three image inputs at the moment: one third-person view,
+        # and two wrist views (left and right). If your dataset does not have a particular type
+        # of image, e.g. wrist images, you can comment it out here and replace it with zeros like we do for the
+        # right wrist image below.
+        base_image = self._parse_image(data["image"])
+        left_wrist_image = self._parse_image(data["wrist_image_left"])
+        right_wrist_image = self._parse_image(data["wrist_image_right"])
+
+        save_dir = "/home/data-5/fei/model/"
+        if self.data_config.head_img_crop:
+            # self.save_image(base_image, f"{save_dir}head.png")
+            base_image = self.crop_img(base_image, self.data_config.head_img_crop)
+            # self.save_image(base_image, f"{save_dir}head_crop.png")
+        if self.data_config.left_img_crop:
+            # self.save_image(left_wrist_image, f"{save_dir}left.png")
+            left_wrist_image = self.crop_img(left_wrist_image, self.data_config.left_img_crop)
+            # self.save_image(left_wrist_image, f"{save_dir}left_crop.png")
+        if self.data_config.right_img_crop:
+            # self.save_image(right_wrist_image, f"{save_dir}right.png")
+            right_wrist_image = self.crop_img(right_wrist_image, self.data_config.right_img_crop)
+            # self.save_image(right_wrist_image, f"{save_dir}right_crop.png")
+
+        # Create inputs dict. Do not change the keys in the dict below.
+        inputs = {
+            "state": data["state"],
+            "image": {
+                "base_0_rgb": base_image,
+                "left_wrist_0_rgb": left_wrist_image,
+                "right_wrist_0_rgb": right_wrist_image,
+            },
+            "image_mask": {
+                "base_0_rgb": np.True_,
+                "left_wrist_0_rgb": np.True_,
+                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
+                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+            },
+        }
+
+        # Pad actions to the model action dimension. Keep this for your own dataset.
+        # Actions are only available during training.
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+
+        # Pass the prompt (aka language instruction) to the model.
+        # Keep this for your own dataset (but modify the key if the instruction is not
+        # stored in "prompt"; the output dict always needs to have the key "prompt").
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+
+        return inputs
+
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotGalbotDataConfig(DataConfigFactory):
@@ -475,7 +587,7 @@ class LeRobotGalbotDataConfig(DataConfigFactory):
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
         data_transforms = _transforms.Group(
-            inputs=[galbot_policy.GalbotInputs(model_type=model_config.model_type)],
+            inputs=[GalbotInputs(model_type=model_config.model_type, data_config=self.base_config)],
             outputs=[galbot_policy.GalbotOutputs()],
         )
 
@@ -850,11 +962,19 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_1115_1124_augmentation",
+            repo_id="/home/data-5/fei/data/lerobot/place_on_workspace_1115_1124_augmentation",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        exp_name="galbot_ld_1127_workspace_crop",
+        checkpoint_base_dir="/home/data-5/fei/model",
+        batch_size=32,
+        num_workers=16,
+        save_interval=1000,
+        keep_period=5000,
+        overwrite=True,
+        resume=False,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=225_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
