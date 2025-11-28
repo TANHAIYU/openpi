@@ -847,14 +847,22 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        checkpoint_base_dir="/home/data-5/fei/model",
         name="pi0_galbot_low_mem_finetune",
+        exp_name="galbot_ld_1127_tray_without_yellow",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_1115_1124_augmentation",
+            repo_id="/home/data-5/fei/data/lerobot/26_27_without_yellow",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        batch_size=32,
+        num_workers=16,
+        save_interval=1000,
+        keep_period=5000,
+        overwrite=False,
+        resume=True,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=225_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
