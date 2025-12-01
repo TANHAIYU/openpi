@@ -849,10 +849,10 @@ _CONFIGS = [
     TrainConfig(
         checkpoint_base_dir="/home/data-5/fei/model",
         name="pi0_galbot_low_mem_finetune",
-        exp_name="galbot_ld_1201_workspace_no_aug",
+        exp_name="galbot_ld_1201_tray_with_aug",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data-5/fei/data/lerobot/place_on_workspace/15_24_no_aug",
+            repo_id="/home/data-5/fei/data/lerobot/26_28_without_yellow_aug",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
