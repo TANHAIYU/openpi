@@ -13,6 +13,7 @@ from pathlib import Path
 from cv_bridge import CvBridge
 from openpi_client import msgpack_numpy
 from sensor_msgs.msg import CompressedImage, JointState
+sys.path.append("/home/abc/dev/galbot_control_interface")
 from galbot_control_interface import GalbotControlInterface
 
 
