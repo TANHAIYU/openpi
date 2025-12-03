@@ -32,6 +32,7 @@ import openpi.transforms as _transforms
 import einops, os
 import numpy as np
 from PIL import Image
+import cv2
 
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
@@ -102,9 +103,9 @@ class DataConfig:
     filter_dict_path: str | None = None
 
     # image crop param: start_px, start_py, height, weight
-    head_img_crop: list | None = dataclasses.field(default_factory=lambda: [150, 110, 450, 800])  # raw: 0, 0, 720, 1280
+    head_img_crop: list | None = dataclasses.field(default_factory=lambda: [250, 110, 400, 800])  # raw: 0, 0, 720, 1280
     left_img_crop: list | None = dataclasses.field(default_factory=lambda: [80, 80, 270, 480])    # raw: 0, 0, 360, 640
-    right_img_crop: list | None = dataclasses.field(default_factory=lambda: [0, 50, 270, 480])   # raw: 0, 0, 360, 640
+    right_img_crop: list | None = dataclasses.field(default_factory=lambda: [0, 100, 270, 430])   # raw: 0, 0, 360, 640
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -462,6 +463,32 @@ class GalbotInputs(_transforms.DataTransformFn):
         else:
             return img[crop_config[0]:crop_config[0]+crop_config[2], crop_config[1]:crop_config[1]+crop_config[3], :]
         
+    @staticmethod
+    def mask_background_img(img, crop_config):
+        # full mask
+        mask = np.ones_like(img, dtype=np.uint8)
+        # random color
+        random_color = np.random.randint(0, 256, size=(3,), dtype=np.uint8)
+        color_bg = np.full_like(img, random_color)
+        # gaussian noise
+        noise_strength=20
+        noise = np.random.normal(0, noise_strength, img.shape).astype(np.uint8)
+        noisy_bg = cv2.add(color_bg, noise)
+        # gaussian blur
+        blur_kernel=(15, 15)
+        enhanced_bg = cv2.GaussianBlur(noisy_bg, blur_kernel, 0)
+        if img.shape[0] == 3:
+            # valid area set 0
+            mask[:, crop_config[0]:crop_config[0]+crop_config[2], crop_config[1]:crop_config[1]+crop_config[3]] = 0
+            processed_frame = np.where(mask == 1, enhanced_bg, img)
+            return processed_frame
+        else:
+            # valid area set 0
+            mask[crop_config[0]:crop_config[0]+crop_config[2], crop_config[1]:crop_config[1]+crop_config[3], :] = 0
+            processed_frame = np.where(mask == 1, enhanced_bg, img)
+            return processed_frame
+
+        
     def _parse_image(self, image) -> np.ndarray:
         image = np.asarray(image)
         if np.issubdtype(image.dtype, np.floating):
@@ -505,15 +532,15 @@ class GalbotInputs(_transforms.DataTransformFn):
         save_dir = "/home/data-5/fei/model/"
         if self.data_config.head_img_crop:
             # self.save_image(base_image, f"{save_dir}head.png")
-            base_image = self.crop_img(base_image, self.data_config.head_img_crop)
+            base_image = self.mask_background_img(base_image, self.data_config.head_img_crop)
             # self.save_image(base_image, f"{save_dir}head_crop.png")
         if self.data_config.left_img_crop:
             # self.save_image(left_wrist_image, f"{save_dir}left.png")
-            left_wrist_image = self.crop_img(left_wrist_image, self.data_config.left_img_crop)
+            left_wrist_image = self.mask_background_img(left_wrist_image, self.data_config.left_img_crop)
             # self.save_image(left_wrist_image, f"{save_dir}left_crop.png")
         if self.data_config.right_img_crop:
             # self.save_image(right_wrist_image, f"{save_dir}right.png")
-            right_wrist_image = self.crop_img(right_wrist_image, self.data_config.right_img_crop)
+            right_wrist_image = self.mask_background_img(right_wrist_image, self.data_config.right_img_crop)
             # self.save_image(right_wrist_image, f"{save_dir}right_crop.png")
 
         # Create inputs dict. Do not change the keys in the dict below.
