@@ -101,7 +101,7 @@ def make_observation() -> dict | None:
         "image": images["head"],          
         "wrist_image_left": images["left_arm"],
         "wrist_image_right": images["right_arm"],
-        "prompt": CFG['inference']['prompt']
+        "prompt": CFG['inference']['task2_prompt'],
     }
 
     return obs
@@ -320,7 +320,7 @@ def main():
 
     time.sleep(1)
     
-    client = WebSocketPolicyClient(CFG['inference']['ws_url'])
+    client = WebSocketPolicyClient(CFG['inference']['ws_url_tray'])
     run_inference_loop(client)
 
 

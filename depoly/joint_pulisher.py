@@ -176,7 +176,7 @@ class ExternalDataJointPublisher:
         print(f"开始发布关节轨迹，当前共 {data_count} 个点")
         
         consecutive_no_data_count = 0  # 连续没有数据的次数
-        max_wait_iterations = 50  # 最大等待次数（约5秒）
+        max_wait_iterations = 50 * 60  # 最大等待次数（约5秒）
         
         while self.is_running:
             # 检查队列是否为空

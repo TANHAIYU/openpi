@@ -16,7 +16,8 @@ class EnvMode(enum.Enum):
 
     LD_P1 = "ld_p1"
     LD_P1_2 = "ld_p1_2"
-    LD_XINQU = "ld_xinqu"
+    LD_TRAY = "ld_tray"
+    LD_WORKSPACE = "ld_workspace"
     DROID = "droid"
     LIBERO = "libero"
 
@@ -41,7 +42,7 @@ class Args:
     """Arguments for the serve_policy script."""
 
     # Environment to serve the policy for. This is only used when serving default policies.
-    env: EnvMode = EnvMode.LD_XINQU
+    env: EnvMode = EnvMode.LD_TRAY
 
     # If provided, will be used in case the "prompt" key is not present in the data, or if the model doesn't have a default
     # prompt.
@@ -66,9 +67,15 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
         config="pi0_galbot_low_mem_finetune",
         dir="/home/abc/Documents/ckpts/pi0/ld_1106/5000",
     ),
-    EnvMode.LD_XINQU: Checkpoint(
+    EnvMode.LD_TRAY: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
-        dir="/home/abc/Documents/ckpts/galbot_ld_1126_6k/20000",
+        # dir="/mnt/dataE/ckpts/galbot_ld_1126_6k/20000",
+        dir="/home/abc/40000",
+    ),
+    EnvMode.LD_WORKSPACE: Checkpoint(
+        config="pi0_galbot_low_mem_finetune",
+        dir="/mnt/dataE/ckpts/galbot_ld_1126_6k/20000",
+        # dir="/mnt/dataE/ckpts/galbot_ld_1126_3k_2k_multi_task/30000",
     ),
 }
 
