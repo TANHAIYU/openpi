@@ -850,7 +850,7 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_3k_2k_2_tasks",
+            repo_id="/home/data_sdd/single_processed/sum_1205/all",
             # repo_id="/home/data_sda/lerobot/place_on_tray_251114_1115",
             # repo_id="/home/data_sdd/data/ld_lerobot/ld_three_camera",
             base_config=DataConfig(prompt_from_task=True),
@@ -863,6 +863,17 @@ _CONFIGS = [
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_galbot_full_finetune",
+        model=pi0_config.Pi0Config(), # default is full fine tunning
+        data=LeRobotGalbotDataConfig(
+            repo_id="/home/data_sdd/single_processed/sum_1205/all",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=250_000,
     ),
     TrainConfig(
         name="pi0_robotwin_low_mem_finetune",
