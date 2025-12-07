@@ -408,33 +408,49 @@ class TaskExecutor:
         """Task 1: Place Spider on Left Workshop"""
         TermUI.banner("TASK 1: Place Spider on Workshop")
         
-        # 1. Reset Pose
+        # 0. Reset Safty Dummy Pose
         c = self.cfg['place_spider_on_workshop']
-        self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        time.sleep(5) # Wait for legs
-        self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
-        time.sleep(2)
-        self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
-        time.sleep(2)
-        self.controller.gripper_close("right")
-        self.controller.gripper_close("left")
-        time.sleep(2)
-
-        # 2. Confirm
-        if not TermUI.ask_user("Ready to [Pick Spider to left workshop] (Model Control)?", "START TASK 1"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose before placing?", "SAFETY CHECK"):
+            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
+            time.sleep(2)
+        else:
+            return False
+        
+        # 1. Move to Initial Placing Left Workshop Pose
+        if TermUI.ask_user("[G-A-L-B-O-T] Ready to move to initial placing pose?", "SAFETY CHECK 2"):
+            self.controller.move_legs(c['init_leg_joints'], async_mode=True)
+            time.sleep(5) # Wait for legs, avoid collision
+            self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
+            time.sleep(2)
+            self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
+            time.sleep(2)
+            self.controller.gripper_close("right")
+            self.controller.gripper_close("left")
+            time.sleep(2)
+        else:
             return False
 
-        # 3. Infer
-        self.run_inference_stage(
-            prompt=self.cfg['inference']['task1_prompt'],
-            ws_url_key='ws_url',
-            max_steps=self.cfg['inference']['max_steps']
-        )
+        # 2. Confirm to Start Inference
+        if not TermUI.ask_user("[G-A-L-B-O-T] Ready to [Pick Spider to left workshop] (Model Control)?", "START TASK 1"):
+            return False
+
+        # 3. Infer [Place Spider on Left Workshop] Model
+        # catch ctrl+c here to avoid infinite loop, human in loop to 
+        try:
+            self.run_inference_stage(
+                prompt=self.cfg['inference']['task1_prompt'],
+                ws_url_key='ws_url',
+                max_steps=self.cfg['inference']['max_steps']
+            )
+        except KeyboardInterrupt:
+            TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
+            return True
         return True
 
     def run_task_2_pick_hardcoded(self):
         """Task 2: Pick Spider (Hardcoded Motion)"""
-        if not TermUI.ask_user("Proceed to [Pick Spider from workshop] (Hardcoded)?", "START TASK 2"):
+        if not TermUI.ask_user("[G-A-L-B-O-T] Proceed to [Pick Spider from workshop] (Hardcoded)?", "START TASK 2"):
             return False
 
         TermUI.banner("TASK 2: Pick from Workshop")
@@ -456,7 +472,7 @@ class TaskExecutor:
 
     def run_task_3_place_tray(self):
         """Task 3: Place on Tray"""
-        if not TermUI.ask_user("Proceed to [Place Spider to Tray]?", "START TASK 3"):
+        if not TermUI.ask_user("[G-A-L-B-O-T] Proceed to [Place Spider to Tray]?", "START TASK 3"):
             return False
 
         TermUI.banner("TASK 3: Place on Tray")
@@ -470,18 +486,18 @@ class TaskExecutor:
         self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
         self.controller.move_legs(c['right_arm_obs'], async_mode=False) # Actually arm move based on config key name?
         
-        # NOTE: Logic implies we might want inference here, but original code commented it out.
-        # We will assume hardcoded finish for now, or uncomment below line if needed.
-
-        if TermUI.ask_user("Do you need model-infer [Place Spider to Tay]?", "START TASK 3"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Do you need model-infer [Place Spider to Tay]?", "START TASK 3"):
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task2_prompt'], 
                 ws_url_key='ws_url_tray', 
                 max_steps=500
             )
+        else:
+            TermUI.log_warn("[G-A-L-B-O-T] Skipping model inference as per user choice. ")
+            TermUI.log_warn("[G-A-L-B-O-T] If you want to use [Place Spider to Tray] Model, just run ros_agent in other terminal.")
+
         
-        
-        TermUI.log_success("Moved to tray position. (Inference skipped as per config).")
+        TermUI.log_success("Moved to tray position. ")
         return True
 
     def run_full_workflow(self):
@@ -505,7 +521,7 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 def signal_handler(sig, frame):
-    print('\n[系统] 检测到 Ctrl+C, 正在强制清理资源并退出...')
+    print('\n [G-A-L-B-O-T] Interrupt received, shutting down...')
     sys.exit(0)
 
 def main():
