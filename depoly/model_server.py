@@ -13,13 +13,9 @@ from openpi.training import config as _config
 
 class EnvMode(enum.Enum):
     """Supported environments."""
-
-    LD_P1 = "ld_p1"
-    LD_P1_2 = "ld_p1_2"
     LD_TRAY = "ld_tray"
-    LD_WORKSPACE = "ld_workspace"
-    DROID = "droid"
-    LIBERO = "libero"
+    LD_WORKSPACE_LEFT = "ld_workspace_left"
+    LD_WORKSPACE_RIGHT = "ld_workspace_right"
 
 
 @dataclasses.dataclass
@@ -59,23 +55,18 @@ class Args:
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
-    EnvMode.LD_P1: Checkpoint(
-        config="pi0_galbot_low_mem_finetune",
-        dir="/home/abc/Documents/ckpts/pi0/ld_1026/100000",
-    ),
-    EnvMode.LD_P1_2: Checkpoint(
-        config="pi0_galbot_low_mem_finetune",
-        dir="/home/abc/Documents/ckpts/pi0/ld_1106/5000",
-    ),
     EnvMode.LD_TRAY: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
         # dir="/mnt/dataE/ckpts/galbot_ld_1126_6k/20000",
-        dir="/home/abc/40000",
+        dir="/mnt/dataE/ckpts/galbot_ld_1212_tray_base_model_750/galbot_ld_1212_tray_base_model_750_16k_steps",
     ),
-    EnvMode.LD_WORKSPACE: Checkpoint(
+    EnvMode.LD_WORKSPACE_LEFT: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
-        dir="/mnt/dataE/ckpts/galbot_ld_1126_6k/20000",
-        # dir="/mnt/dataE/ckpts/galbot_ld_1126_3k_2k_multi_task/30000",
+        dir='/mnt/dataE/ckpts/galbot_ld_train_on_base_model_1210_700episodes/galbot_ld_train_on_base_model_1210_700episodes_20000'
+    ),
+    EnvMode.LD_WORKSPACE_RIGHT: Checkpoint(
+        config="pi0_galbot_low_mem_finetune",
+        dir=''
     ),
 }
 
