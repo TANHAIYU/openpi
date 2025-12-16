@@ -441,11 +441,11 @@ class TaskExecutor:
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
             time.sleep(4) # Wait for legs, avoid collision
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
-            time.sleep(2)
+            time.sleep(0.2)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(2)
+            time.sleep(0.2)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Need to close left gripper?", "TASK 1 INFO"):
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "TASK 1 INFO"):
                 time.sleep(1)
                 self.controller.gripper_close("left")
 
@@ -464,25 +464,23 @@ class TaskExecutor:
         
         # 0. Reset Safty Dummy Pose
         c = self.cfg['place_spider_on_workshop']
-        if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before placing?", "SAFETY CHECK"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
             self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(2)
+            time.sleep(1.5)
         
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] Ready to move to initial placing pose?", "SAFETY CHECK 2"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-            time.sleep(4) # Wait for legs, avoid collision
+            time.sleep(2) # Wait for legs, avoid collision
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
-            time.sleep(2)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(2)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Need to close left gripper?", "TASK 1 INFO"):
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "TASK 1 INFO"):
                 self.controller.gripper_close("left")
 
         # 2. Confirm to Start Inference
-        if not TermUI.ask_user("[G-A-L-B-O-T] Ready to [Pick Spider to left workshop] (Model Control)?", "START TASK 1"):
+        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to left workshop]?", "START TASK 1"):
             return False
 
         # 3. Infer [Place Spider on Left Workshop] Model
@@ -500,7 +498,7 @@ class TaskExecutor:
 
     def run_task_2_pick_hardcoded(self):
         """Task 2: Pick Spider (Hardcoded Motion)"""
-        if not TermUI.ask_user("[G-A-L-B-O-T] Proceed to [Pick Spider from workshop] (Hardcoded)?", "START TASK 2"):
+        if not TermUI.ask_user("[G-A-L-B-O-T] HardCode [Pick Spider from workshop]?", "START TASK 2"):
             return False
 
         TermUI.banner("TASK 2: Pick from Workshop")
@@ -513,12 +511,11 @@ class TaskExecutor:
             self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
             time.sleep(1.0)
             self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
-            time.sleep(1)
+            time.sleep(1.5)
             self.controller.gripper_close("left")
-            time.sleep(1)
-            if TermUI.ask_user("[G-A-L-B-O-T] Ready to lift the spider?", "LIFT CHECK"):
+            time.sleep(1.0)
+            if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
                 self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
-            TermUI.log_success("Pick sequence completed.")
         except Exception as e:
             TermUI.log_error(f"Task 2 Error: {e}")
             return False
@@ -532,21 +529,18 @@ class TaskExecutor:
         TermUI.banner("TASK 3: Place on Tray")
         c = self.cfg['place_spider_on_tray']
 
-        if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before placing?", "SAFETY CHECK"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Safe pose?", "SAFETY CHECK"):
             self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(5)
+            time.sleep(0.5)
 
         # Pre-motion
         self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        time.sleep(4)
-        # self.controller.move_arm(c['init_place_arm_joints'], arm="left_arm", async_mode=True)
-        # time.sleep(3)
+        time.sleep(3)
         self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
-        time.sleep(1)
         self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
         
-        if TermUI.ask_user("[G-A-L-B-O-T] Do you need model-infer [Place Spider to Tay]?", "START TASK 3"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Model-Infer [Place Spider to Tay]?", "START TASK 3"):
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task3_prompt'], 
                 ws_url_key='ws_url_tray', 
@@ -601,11 +595,11 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 def main():
-    rospy.init_node("openpi", anonymous=True)
+    rospy.init_node("galbot_pi", anonymous=True)
     
-    parser = argparse.ArgumentParser(description="OpenPI ROS Agent")
+    parser = argparse.ArgumentParser(description="GalbotPI ROS Agent")
     parser.add_argument("-c", "--config", type=str, default="ld_depoly_config.yaml", help="Path to config file")
-    parser.add_argument("-mode", "--run_mode", type=str, default="full", help="Run mode")
+    parser.add_argument("-mode", "--mode", type=str, default="full", help="Run mode")
     args = parser.parse_args()
     
     cfg = load_config(args.config)
@@ -613,12 +607,12 @@ def main():
     # Setup Logging
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
     
-    TermUI.banner("OpenPI ROS Agent Initializing...")
+    TermUI.banner("GalbotPi ROS Agent Initializing...")
     
     try:
         executor = TaskExecutor(cfg)
         time.sleep(1.0)
-        executor.run_full_workflow(args.run_mode)
+        executor.run_full_workflow(args.mode)
     except KeyboardInterrupt:
         TermUI.banner("Stopping Agent (Ctrl+C)", color=TermUI.FAIL)
     except Exception as e:
