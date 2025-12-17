@@ -850,15 +850,13 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/single_processed/sum_1214/1214_total",
-            # repo_id="/home/data_sda/lerobot/place_on_tray_251114_1115",
-            # repo_id="/home/data_sdd/data/ld_lerobot/ld_three_camera",
+            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_left_1217_ld",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
         # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/home/data_sdd/weights/pi0_ckpt/galbot_ld/pi0_galbot_low_mem_finetune/galbot_ld_1206_base_lora_128_pred_horizon_50/80000/params"),
-        num_train_steps=225_000,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/data_sdd/weights/pi0_ckpt/galbot_ld/pi0_galbot_low_mem_finetune/galbot_ld_1214_foundation_mode_3c_5090/110000"),
+        num_train_steps=100_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
