@@ -291,7 +291,7 @@ class GalbotController:
         )
         time.sleep(2)
 
-    def execute_actions(self, actions: np.ndarray, is_placed: bool = False):
+    def execute_actions(self, actions: np.ndarray):
         """处理并执行动作序列"""
         gripper_cfg = self.cfg['robot']['gripper']
         offset = gripper_cfg['offset']
@@ -342,6 +342,24 @@ class GalbotController:
             self.interface.set_gripper_status(width_percent=0.8, speed=0.2, force=20, gripper=gripper_name)
         except Exception as e:
             TermUI.log_error(f"Gripper close failed: {e}")
+    def wait_untill_done(self, part):
+        while True:
+            if part == "left_arm":
+                if not self.interface.get_follow_trajectory_status(hardware="left_arm")[0]:
+                    break
+                time.sleep(0.1)
+            elif part == "right_arm":
+                if not self.interface.get_follow_trajectory_status(hardware="right_arm")[0]:
+                    break
+                time.sleep(0.1)
+            elif part == "leg":
+                if not self.interface.get_follow_trajectory_status(hardware="leg")[0]:
+                    break
+                time.sleep(0.1)
+            else:
+                TermUI.log_error(f"Unknown part: {part}")
+                break
+                
 
 
 # ==============================================================================
@@ -371,7 +389,7 @@ class TaskExecutor:
         if self.policy_client is None or self.policy_client.ws_url != url:
             self.policy_client = WebSocketPolicyClient(url)
 
-    def run_inference_stage(self, prompt, ws_url_key, max_steps):
+    def run_inference_stage(self, prompt, ws_url_key, max_steps, exec_horizon):
         self._ensure_policy_client(self.cfg['inference'][ws_url_key])
         self.state_machine.reset()
 
@@ -382,7 +400,7 @@ class TaskExecutor:
         print(f"Checking inference... (Press 'q' to stop)")
         
         step = 1
-        horizon = self.cfg['inference']['action_horizon']
+        # horizon = self.cfg['inference']['action_horizon']
         try:
             while step < max_steps and not rospy.is_shutdown():
                 time.sleep(0.1) # Control loop frequency cap
@@ -410,7 +428,7 @@ class TaskExecutor:
                 self.state_machine.update(actions)
 
                 # Execute
-                self.controller.execute_actions(actions[:horizon], is_placed=self.state_machine.is_placed())
+                self.controller.execute_actions(actions[:exec_horizon])
 
                 TermUI.log_step(step, latency, self.state_machine.get_state_name())
 
@@ -420,47 +438,37 @@ class TaskExecutor:
 
                 step += 1
 
-                time.sleep(0.6 + 0.2)  # Small delay to avoid busy loop
+                time.sleep(exec_horizon / 50.0 + 0.3)  # Small delay to avoid busy loop
         finally:
             listener.stop()
         
         return True
     
-    def run_task_0_pick_from_box(self):
-        """"Task0: Pick Spoder from Box"""
+    def run_task_pick_from_box(self):
+        """"Task: Pick Spoder from Box"""
         TermUI.banner("TASK 0: Pick Spider from Box")
 
+        c = self.cfg['pick_spider_from_box']
         if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before picking?", "SAFETY CHECK"):
-            c = self.cfg['pick_spider_from_box']
             self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(5)
+            time.sleep(1.0)
 
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] Ready to move to initial placing pose?", "SAFETY CHECK 2"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-            time.sleep(4) # Wait for legs, avoid collision
+            time.sleep(2) # Wait for legs, avoid collision
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
-            time.sleep(0.2)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(0.2)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "TASK 1 INFO"):
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 time.sleep(1)
                 self.controller.gripper_close("left")
+        return True
 
-        if TermUI.ask_user("[G-A-L-B-O-T] Please Start [Pick Spider from box] task by other seperate scripts.", "TASK 0 INFO"):
-            TermUI.log_success("[G-A-L-B-O-T] Please wait for other scripts to finish picking spider from box.")
-        
-        if TermUI.ask_user("[G-A-L-B-O-T] Done [Pick Spider from box] Task?", "TASK 0 CONFIRM"):
-            return True
-        else:
-            TermUI.log_error("[G-A-L-B-O-T] Please complete [Pick Spider from box] Task first before proceeding.")
-            return False
-
-    def run_task_1_place_left(self):
-        """Task 1: Place Spider on Left Workshop"""
-        TermUI.banner("TASK 1: Place Spider on Workshop")
+    def run_task_place_left(self):
+        """Task: Place Spider on Left Workshop"""
+        TermUI.banner("TASK: Place Spider on Workshop left")
         
         # 0. Reset Safty Dummy Pose
         c = self.cfg['place_spider_on_workshop']
@@ -476,11 +484,11 @@ class TaskExecutor:
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "TASK 1 INFO"):
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 self.controller.gripper_close("left")
 
         # 2. Confirm to Start Inference
-        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to left workshop]?", "START TASK 1"):
+        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to left workshop]?", "START TASK"):
             return False
 
         # 3. Infer [Place Spider on Left Workshop] Model
@@ -488,30 +496,115 @@ class TaskExecutor:
         try:
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task1_prompt'],
-                ws_url_key='ws_url',
-                max_steps=self.cfg['inference']['max_steps']
+                ws_url_key='ws_url_left',
+                max_steps=self.cfg['inference']['max_steps'],
+                exec_horizon=15
             )
         except KeyboardInterrupt:
             TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
             return True
         return True
 
-    def run_task_2_pick_hardcoded(self):
-        """Task 2: Pick Spider (Hardcoded Motion)"""
-        if not TermUI.ask_user("[G-A-L-B-O-T] HardCode [Pick Spider from workshop]?", "START TASK 2"):
+    def run_task_place_right(self):
+        """Place Spider on right Workshop"""
+        TermUI.banner("TASK: Place Spider on Workshop right")
+        
+        # 0. Reset Safty Dummy Pose
+        c = self.cfg['place_spider_on_workshop_right']
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
+            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
+        
+        # 1. Move to Initial Placing Left Workshop Pose
+        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+            self.controller.move_legs(c['init_leg_joints'], async_mode=True)
+            time.sleep(2) # Wait for legs, avoid collision
+            self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
+            self.controller.gripper_close("right")
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
+                self.controller.gripper_close("left")
+
+        # 2. Confirm to Start Inference
+        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to right workshop]?", "START TASK"):
             return False
 
-        TermUI.banner("TASK 2: Pick from Workshop")
-        c = self.cfg['pick_spider_from_workshop']
+        # 3. Infer [Place Spider on Left Workshop] Model
+        # catch ctrl+c here to avoid infinite loop, human in loop to 
+        try:
+            self.run_inference_stage(
+                prompt=self.cfg['inference']['task2_prompt'],
+                ws_url_key='ws_url_right',
+                max_steps=self.cfg['inference']['max_steps'],
+                exec_horizon=15
+            )
+        except KeyboardInterrupt:
+            TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
+            return True
+        return True
 
+    def run_task_pick_hardcoded_left(self):
+        """Task: Pick Spider (Hardcoded Motion)"""
+        if not TermUI.ask_user("[G-A-L-B-O-T] HardCode [Pick Spider from workshop]?", "START TASK"):
+            return False
+
+        TermUI.banner("TASK: Pick from Workshop")
+        c = self.cfg['pick_spider_from_workshop_left']
 
         self.controller.gripper_open("left")
 
         try:
             self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
-            time.sleep(1.0)
+            self.controller.wait_untill_done("left_arm")
             self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
-            time.sleep(1.5)
+            self.controller.gripper_close("left")
+
+            self.controller.wait_untill_done("left_arm")
+            if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
+                self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
+        except Exception as e:
+            TermUI.log_error(f"Task 2 Error: {e}")
+            return False
+        return True
+
+    def run_task_pick_hardcoded_right(self):
+        """Task: Pick Spider (Hardcoded Motion)"""
+        if not TermUI.ask_user("[G-A-L-B-O-T] HardCode [Pick Spider from workshop]?", "START TASK "):
+            return False
+
+        TermUI.banner("TASK: Pick from Workshop")
+        c = self.cfg['pick_spider_from_workshop_right']
+
+        if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before picking?", "SAFETY CHECK"):
+            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
+            time.sleep(1.0)
+
+        # 1. Move to Initial Placing Left Workshop Pose
+        if TermUI.ask_user("[G-A-L-B-O-T] ready to move to face-spider-pose?", "SAFETY CHECK 2"):
+            self.controller.move_legs(c['init_leg_joints'], async_mode=True)
+            # time.sleep(3) # Wait for legs, avoid collision
+            self.controller.wait_untill_done("leg_arm")
+            self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
+            time.sleep(0.2)
+            self.controller.gripper_close("right")
+            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
+                time.sleep(1)
+                self.controller.gripper_close("left")
+
+        self.controller.gripper_open("left")
+
+        try:
+            self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
+            # time.sleep(1.0)
+            self.controller.wait_untill_done("left_arm")
+            self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
+            # time.sleep(1.5)
+            self.controller.wait_untill_done("left_arm")
+            self.controller.move_arm(c['pick_left_arm_joints_wp3'], arm="left_arm")
+            # time.sleep(1.5)
+            self.controller.wait_untill_done("left_arm")
             self.controller.gripper_close("left")
             time.sleep(1.0)
             if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
@@ -521,30 +614,31 @@ class TaskExecutor:
             return False
         return True
 
-    def run_task_3_place_tray(self):
-        """Task 3: Place on Tray"""
-        if not TermUI.ask_user("[G-A-L-B-O-T] Proceed to [Place Spider to Tray]?", "START TASK 3"):
-            return False
+    def run_task_place_tray(self):
+        """Task: Place on Tray"""
 
-        TermUI.banner("TASK 3: Place on Tray")
+        TermUI.banner("TASK: Place on Tray")
         c = self.cfg['place_spider_on_tray']
 
         if TermUI.ask_user("[G-A-L-B-O-T] Safe pose?", "SAFETY CHECK"):
             self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(0.5)
+            time.sleep(4.0)
 
         # Pre-motion
         self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        time.sleep(3)
+        self.controller.wait_untill_done("leg")
+        self.controller.wait_untill_done("left_arm")
         self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
+        self.controller.wait_untill_done("right_arm")
         self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
         
-        if TermUI.ask_user("[G-A-L-B-O-T] Model-Infer [Place Spider to Tay]?", "START TASK 3"):
+        if TermUI.ask_user("[G-A-L-B-O-T] Model-Infer [Place Spider to Tay]?", "START TASK"):
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task3_prompt'], 
                 ws_url_key='ws_url_tray', 
-                max_steps=500
+                max_steps=500,
+                exec_horizon=50
             )
         else:
             TermUI.log_warn("[G-A-L-B-O-T] Skipping model inference as per user choice. ")
@@ -557,24 +651,42 @@ class TaskExecutor:
     def run_full_workflow(self, run_model):
         if run_model == "full":
             TermUI.log_warn("Running FULL workflow including all tasks.")
-            if not self.run_task_0_pick_from_box(): return
-            if not self.run_task_1_place_left(): return
-            if not self.run_task_2_pick_hardcoded(): return
-            if not self.run_task_3_place_tray(): return
+            if not self.run_task_pick_from_box(): return
+            if not self.run_task_place_right(): return
+            if not self.run_task_pick_from_box(): return
+            if not self.run_task_place_left(): return
+            if not self.run_task_pick_hardcoded_left(): return
+            if not self.run_task_place_tray(): return
+            if not self.run_task_pick_hardcoded_right(): return
+            if not self.run_task_place_tray(): return
+        elif run_model == "right":
+            TermUI.log_warn("Running PipeLine starting [Place on Right Workshop]")
+            if not self.run_task_place_right(): return
+            if not self.run_task_pick_from_box(): return
+            if not self.run_task_place_left(): return
+            if not self.run_task_pick_hardcoded_left(): return
+            if not self.run_task_place_tray(): return
+            if not self.run_task_pick_hardcoded_right(): return
+            if not self.run_task_place_tray(): return
         elif run_model == "left":
-            TermUI.log_warn("Running PipeLine starting from Task 1 [Place on Left Workshop]")
-            if not self.run_task_1_place_left(): return
-            if not self.run_task_2_pick_hardcoded(): return
-            if not self.run_task_3_place_tray(): return
+            TermUI.log_warn("Running PipeLine starting [Place on Left Workshop]")
+            if not self.run_task_place_left(): return
+            if not self.run_task_pick_hardcoded_left(): return
+            if not self.run_task_place_tray(): return
+            if not self.run_task_pick_hardcoded_right(): return
+            if not self.run_task_place_tray(): return
         elif run_model == "tray":
-            TermUI.log_warn("Running PipeLine starting from Task 3 [Place on Tray]")
-            if not self.run_task_3_place_tray(): return
+            TermUI.log_warn("Running PipeLine starting [Place on Tray]")
+            if not self.run_task_place_tray(): return
         elif run_model == "only_left":
-            TermUI.log_warn("Running ONLY Task 1 [Place on Left Workshop]")
-            if not self.run_task_1_place_left(): return
+            TermUI.log_warn("Running ONLY [Place on Left Workshop]")
+            if not self.run_task_place_left(): return
+        elif run_model == "only_right":
+            TermUI.log_warn("Running ONLY [Place on Right Workshop]")
+            if not self.run_task_place_right(): return
         elif run_model == "only_tray":
-            TermUI.log_warn("Running ONLY Task 3 [Place on Tray]")
-            if not self.run_task_3_place_tray(): return
+            TermUI.log_warn("Running ONLY [Place on Tray]")
+            if not self.run_task_place_tray(): return
         
         TermUI.banner("ALL TASKS COMPLETED SUCCESSFULLY", color=TermUI.GREEN)
 
