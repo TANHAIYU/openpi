@@ -53,7 +53,7 @@ class TermUI:
     @staticmethod
     def log_step(step: int, latency: float, state: str):
         print(f"{TermUI.CYAN}[STEP {step:03d}]{TermUI.ENDC} "
-              f"Latency: {latency:.1f}ms | State: {TermUI.BOLD}{state}{TermUI.ENDC}")
+              f"Latency: {latency:.1f}ms")
 
     @staticmethod
     def log_success(msg: str):
@@ -90,39 +90,6 @@ class TermUI:
             print(f"{TermUI.FAIL}>>> Aborted by user.{TermUI.ENDC}\n")
             print(f"user input: {user_input}")
             return False
-
-# ==============================================================================
-#                               CORE CLASSES
-# ==============================================================================
-
-class TaskStage(Enum):
-    PLACING = auto()
-    PLACED = auto()
-    FAILED = auto()
-
-class TaskStateMachine:
-    def __init__(self, threshold: float):
-        self.current_state = TaskStage.PLACING
-        self.gripper_threshold = threshold 
-
-    def update(self, actions: np.ndarray):
-        if self.current_state == TaskStage.PLACING:
-            # Check last gripper value in the action chunk
-            last_gripper_val = actions[-1, 7]
-            if last_gripper_val > self.gripper_threshold:
-                TermUI.log_success(f"Transition: PLACING -> PLACED (Val: {last_gripper_val:.4f})")
-                self.current_state = TaskStage.PLACED
-
-    def is_placed(self) -> bool:
-        return self.current_state == TaskStage.PLACED
-
-    def reset(self):
-        self.current_state = TaskStage.PLACING
-
-    def get_state_name(self) -> str:
-        color = TermUI.GREEN if self.current_state == TaskStage.PLACED else TermUI.WARNING
-        return f"{color}{self.current_state.name}{TermUI.ENDC}"
-
 
 class SensorManager:
     """管理 ROS 订阅和观测数据的构建"""
@@ -359,6 +326,11 @@ class GalbotController:
             else:
                 TermUI.log_error(f"Unknown part: {part}")
                 break
+    
+    def wait_untill_all_done(self):
+        self.wait_untill_done("left_arm")
+        self.wait_untill_done("right_arm")
+        self.wait_untill_done("leg")
                 
 
 
@@ -371,7 +343,6 @@ class TaskExecutor:
         self.cfg = cfg
         self.controller = GalbotController(cfg)
         self.sensors = SensorManager(cfg)
-        self.state_machine = TaskStateMachine(threshold=cfg['robot']['gripper']['threshold'])
         self.policy_client = None # Lazy init
         self.stop_requested = False
 
@@ -391,7 +362,6 @@ class TaskExecutor:
 
     def run_inference_stage(self, prompt, ws_url_key, max_steps, exec_horizon):
         self._ensure_policy_client(self.cfg['inference'][ws_url_key])
-        self.state_machine.reset()
 
         listener = keyboard.Listener(on_press=self.on_press)
         listener.start()
@@ -424,17 +394,8 @@ class TaskExecutor:
                 latency = (time.time() - t_start) * 1000
                 actions = np.array(result["actions"])
 
-                # Update State Machine
-                self.state_machine.update(actions)
-
                 # Execute
                 self.controller.execute_actions(actions[:exec_horizon])
-
-                TermUI.log_step(step, latency, self.state_machine.get_state_name())
-
-                if self.state_machine.current_state == TaskStage.PLACED:
-                    # Optional: break early or continue to ensure stability
-                    pass
 
                 step += 1
 
@@ -536,7 +497,7 @@ class TaskExecutor:
                 prompt=self.cfg['inference']['task2_prompt'],
                 ws_url_key='ws_url_right',
                 max_steps=self.cfg['inference']['max_steps'],
-                exec_horizon=15
+                exec_horizon=30
             )
         except KeyboardInterrupt:
             TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
@@ -584,7 +545,7 @@ class TaskExecutor:
         if TermUI.ask_user("[G-A-L-B-O-T] ready to move to face-spider-pose?", "SAFETY CHECK 2"):
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
             # time.sleep(3) # Wait for legs, avoid collision
-            self.controller.wait_untill_done("leg_arm")
+            self.controller.wait_untill_all_done()
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
             time.sleep(0.2)
@@ -597,16 +558,13 @@ class TaskExecutor:
 
         try:
             self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
-            # time.sleep(1.0)
             self.controller.wait_untill_done("left_arm")
             self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
-            # time.sleep(1.5)
             self.controller.wait_untill_done("left_arm")
             self.controller.move_arm(c['pick_left_arm_joints_wp3'], arm="left_arm")
-            # time.sleep(1.5)
             self.controller.wait_untill_done("left_arm")
             self.controller.gripper_close("left")
-            time.sleep(1.0)
+            self.controller.wait_untill_done("left_arm")
             if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
                 self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
         except Exception as e:
