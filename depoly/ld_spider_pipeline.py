@@ -32,6 +32,8 @@ from joint_pulisher import ExternalDataJointPublisher
 #                               UI & LOGGING UTILS
 # ==============================================================================
 
+DEBUG_MODE = False
+
 class TermUI:
     """处理终端颜色输出和用户交互的工具类"""
     HEADER = '\033[95m'
@@ -105,14 +107,11 @@ class SensorManager:
         self._setup_subscribers()
 
     def _setup_subscribers(self):
-        # Cameras
         for cam in self.cfg['ros']['camera_names']:
-            # Auto-detect topic naming convention
             topic = f"/cam/{cam}/wrist/color/image_raw/compressed" if "arm" in cam else f"/cam/{cam}/color/image_raw/compressed"
             rospy.Subscriber(topic, CompressedImage, lambda msg, c=cam: self._camera_cb(msg, c), queue_size=1)
             rospy.loginfo(f"Subscribed to Camera: {topic}")
 
-        # Joints
         rospy.Subscriber("/left_arm/joint_states", JointState, 
                          lambda msg: self._state_cb(msg, "/left_arm/joint_states"), queue_size=1)
         rospy.Subscriber("/left_arm_gripper/joint_states", JointState, 
@@ -250,24 +249,15 @@ class GalbotController:
         except:
             return False
 
-    def reset_pose(self):
-        """移动到初始姿态"""
-        self.interface.set_arm_joint_angles(
-            arm_joint_angles=self.cfg['robot']['reset_joints'], 
-            speed=1.0, arm="left_arm", asynchronous=True
-        )
-        time.sleep(2)
-
     def execute_actions(self, actions: np.ndarray):
         """处理并执行动作序列"""
         gripper_cfg = self.cfg['robot']['gripper']
         offset = gripper_cfg['offset']
         max_limit = gripper_cfg['action_limit']
-        threshold = gripper_cfg['threshold']
 
         if isinstance(actions, np.ndarray):
             actions[:, 7] = np.maximum(actions[:, 7] - offset, 0.0)
-            actions[:, 7] = np.minimum(actions[:, 7], max_limit)
+            # actions[:, 7] = np.minimum(actions[:, 7], max_limit)
 
         self.publisher.add_joints(actions)
 
@@ -276,21 +266,21 @@ class GalbotController:
             self.start_publish = True
 
     # Helper wrappers for movement
-    def move_arm(self, joints, speed=0.3, arm="left_arm", async_mode=False):
+    def move_arm(self, joints, speed=0.6, arm="left_arm", async_mode=False):
         try:
             self.interface.set_arm_joint_angles(arm_joint_angles=joints, speed=speed, arm=arm, asynchronous=async_mode)
             if not async_mode: time.sleep(0.5)
         except Exception as e:
             TermUI.log_error(f"Move arm failed: {e}")
 
-    def move_arm_slow(self, joints, speed=0.1, arm="left_arm", async_mode=False):
+    def move_arm_slow(self, joints, speed=0.3, arm="left_arm", async_mode=False):
         try:
             self.interface.set_arm_joint_angles(arm_joint_angles=joints, speed=speed, arm=arm, asynchronous=async_mode)
             if not async_mode: time.sleep(0.5)
         except Exception as e:
             TermUI.log_error(f"Move arm failed: {e}")
 
-    def move_legs(self, joints, speed=0.3, async_mode=False):
+    def move_legs(self, joints, speed=0.6, async_mode=False):
         try:
             self.interface.set_leg_joint_angles(leg_joint_angles=joints, speed=speed, asynchronous=async_mode)
         except Exception as e:
@@ -314,15 +304,18 @@ class GalbotController:
             if part == "left_arm":
                 if not self.interface.get_follow_trajectory_status(hardware="left_arm")[0]:
                     break
-                time.sleep(0.1)
+                time.sleep(0.05)
+                TermUI.log_warn("[G-A-L-B-O-T] Waiting for left arm to complete trajectory...")
             elif part == "right_arm":
                 if not self.interface.get_follow_trajectory_status(hardware="right_arm")[0]:
                     break
-                time.sleep(0.1)
+                time.sleep(0.05)
+                TermUI.log_warn("[G-A-L-B-O-T] Waiting for right arm to complete trajectory...")
             elif part == "leg":
                 if not self.interface.get_follow_trajectory_status(hardware="leg")[0]:
                     break
-                time.sleep(0.1)
+                TermUI.log_warn("[G-A-L-B-O-T] Waiting for leg to complete trajectory...")
+                time.sleep(0.05)
             else:
                 TermUI.log_error(f"Unknown part: {part}")
                 break
@@ -331,6 +324,14 @@ class GalbotController:
         self.wait_untill_done("left_arm")
         self.wait_untill_done("right_arm")
         self.wait_untill_done("leg")
+    
+    def move_to_safe_pose(self):
+        c = self.cfg['place_spider_on_workshop_right']
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
+            self.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
+            time.sleep(1.5)
+        
                 
 
 
@@ -346,10 +347,8 @@ class TaskExecutor:
         self.policy_client = None # Lazy init
         self.stop_requested = False
 
-    # 定义按键监听回调
     def on_press(self, key):
         try:
-            # 这里设定按下 'q' 键停止，也可以换成 keyboard.Key.esc
             if hasattr(key, 'char') and key.char == 'q':
                 self.stop_requested = True
                 return False # 停止监听
@@ -410,20 +409,15 @@ class TaskExecutor:
         TermUI.banner("TASK 0: Pick Spider from Box")
 
         c = self.cfg['pick_spider_from_box']
-        if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before picking?", "SAFETY CHECK"):
-            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
-            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(1.0)
-
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Move to placing spider pose?", "SAFETY CHECK 2") :
+            self.controller.wait_untill_all_done()
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
             time.sleep(2) # Wait for legs, avoid collision
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
-                time.sleep(1)
+            if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 self.controller.gripper_close("left")
         return True
 
@@ -431,77 +425,57 @@ class TaskExecutor:
         """Task: Place Spider on Left Workshop"""
         TermUI.banner("TASK: Place Spider on Workshop left")
         
-        # 0. Reset Safty Dummy Pose
         c = self.cfg['place_spider_on_workshop']
-        if TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
-            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
-            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(1.5)
-        
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+            self.controller.wait_untill_all_done()
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-            time.sleep(2) # Wait for legs, avoid collision
+            self.controller.wait_untill_all_done()
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
+            if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 self.controller.gripper_close("left")
 
         # 2. Confirm to Start Inference
-        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to left workshop]?", "START TASK"):
-            return False
-
-        # 3. Infer [Place Spider on Left Workshop] Model
-        # catch ctrl+c here to avoid infinite loop, human in loop to 
-        try:
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to left workshop]?", "START TASK"):
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task1_prompt'],
                 ws_url_key='ws_url_left',
                 max_steps=self.cfg['inference']['max_steps'],
                 exec_horizon=15
             )
-        except KeyboardInterrupt:
-            TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
-            return True
+        else:
+            TermUI.log_warn("User aborted the task.")
         return True
 
     def run_task_place_right(self):
         """Place Spider on right Workshop"""
         TermUI.banner("TASK: Place Spider on Workshop right")
         
-        # 0. Reset Safty Dummy Pose
         c = self.cfg['place_spider_on_workshop_right']
-        if TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
-            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
-            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
         
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Move to initial placing pose?", "SAFETY CHECK 2"):
+            self.controller.wait_untill_all_done()
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
             time.sleep(2) # Wait for legs, avoid collision
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
+            if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 self.controller.gripper_close("left")
 
         # 2. Confirm to Start Inference
-        if not TermUI.ask_user("[G-A-L-B-O-T] Model Infer [Pick Spider to right workshop]?", "START TASK"):
-            return False
+        self.controller.wait_untill_all_done()
 
-        # 3. Infer [Place Spider on Left Workshop] Model
-        # catch ctrl+c here to avoid infinite loop, human in loop to 
-        try:
-            self.run_inference_stage(
-                prompt=self.cfg['inference']['task2_prompt'],
-                ws_url_key='ws_url_right',
-                max_steps=self.cfg['inference']['max_steps'],
-                exec_horizon=30
-            )
-        except KeyboardInterrupt:
-            TermUI.banner("Inference Interrupted by User (Ctrl+C)", color=TermUI.FAIL)
-            return True
+        # 3. Infer [Place Spider on Right Workshop] Model
+        self.run_inference_stage(
+            prompt=self.cfg['inference']['task2_prompt'],
+            ws_url_key='ws_url_right',
+            max_steps=self.cfg['inference']['max_steps'],
+            exec_horizon=20
+        )
         return True
 
     def run_task_pick_hardcoded_left(self):
@@ -514,18 +488,14 @@ class TaskExecutor:
 
         self.controller.gripper_open("left")
 
-        try:
-            self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
-            self.controller.wait_untill_done("left_arm")
-            self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
-            self.controller.gripper_close("left")
+        self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
+        self.controller.wait_untill_done("left_arm")
+        self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
+        self.controller.gripper_close("left")
 
-            self.controller.wait_untill_done("left_arm")
-            if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
-                self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
-        except Exception as e:
-            TermUI.log_error(f"Task 2 Error: {e}")
-            return False
+        self.controller.wait_untill_done("left_arm")
+        if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
+            self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
         return True
 
     def run_task_pick_hardcoded_right(self):
@@ -536,40 +506,32 @@ class TaskExecutor:
         TermUI.banner("TASK: Pick from Workshop")
         c = self.cfg['pick_spider_from_workshop_right']
 
-        if TermUI.ask_user("[G-A-L-B-O-T] Need to safe pose before picking?", "SAFETY CHECK"):
-            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
-            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(1.0)
+        self.controller.move_to_safe_pose()
 
         # 1. Move to Initial Placing Left Workshop Pose
-        if TermUI.ask_user("[G-A-L-B-O-T] ready to move to face-spider-pose?", "SAFETY CHECK 2"):
+        if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] ready to move to face-spider-pose?", "SAFETY CHECK 2"):
+            self.controller.wait_untill_all_done()
             self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-            # time.sleep(3) # Wait for legs, avoid collision
+            time.sleep(2) # Wait for legs, avoid collision
             self.controller.wait_untill_all_done()
             self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
             self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(0.2)
             self.controller.gripper_close("right")
-            if TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
-                time.sleep(1)
+            if not DEBUG_MODE or TermUI.ask_user("[G-A-L-B-O-T] Close left gripper?", "INFO"):
                 self.controller.gripper_close("left")
 
         self.controller.gripper_open("left")
 
-        try:
-            self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
-            self.controller.wait_untill_done("left_arm")
-            self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
-            self.controller.wait_untill_done("left_arm")
-            self.controller.move_arm(c['pick_left_arm_joints_wp3'], arm="left_arm")
-            self.controller.wait_untill_done("left_arm")
-            self.controller.gripper_close("left")
-            self.controller.wait_untill_done("left_arm")
-            if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
-                self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
-        except Exception as e:
-            TermUI.log_error(f"Task 2 Error: {e}")
-            return False
+        self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
+        self.controller.wait_untill_done("left_arm")
+        self.controller.move_arm(c['pick_left_arm_joints_wp2'], arm="left_arm")
+        self.controller.wait_untill_done("left_arm")
+        self.controller.move_arm(c['pick_left_arm_joints_wp3'], arm="left_arm")
+        self.controller.wait_untill_done("left_arm")
+        self.controller.gripper_close("left")
+        self.controller.wait_untill_done("left_arm")
+        if TermUI.ask_user("[G-A-L-B-O-T] Lift the spider?", "LIFT CHECK"):
+            self.controller.move_arm(c['lift_spider_joints'], arm="left_arm")
         return True
 
     def run_task_place_tray(self):
@@ -578,80 +540,80 @@ class TaskExecutor:
         TermUI.banner("TASK: Place on Tray")
         c = self.cfg['place_spider_on_tray']
 
-        if TermUI.ask_user("[G-A-L-B-O-T] Safe pose?", "SAFETY CHECK"):
-            self.controller.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
-            self.controller.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-            time.sleep(4.0)
-
         # Pre-motion
         self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        self.controller.wait_untill_done("leg")
-        self.controller.wait_untill_done("left_arm")
+        time.sleep(1.5) # Wait for legs, avoid collision
         self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
-        self.controller.wait_untill_done("right_arm")
         self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
         
+        self.controller.wait_untill_all_done() # wait for pre-place-idle motion
         if TermUI.ask_user("[G-A-L-B-O-T] Model-Infer [Place Spider to Tay]?", "START TASK"):
+            self.controller.wait_untill_all_done()
             self.run_inference_stage(
                 prompt=self.cfg['inference']['task3_prompt'], 
                 ws_url_key='ws_url_tray', 
                 max_steps=500,
                 exec_horizon=50
             )
-        else:
-            TermUI.log_warn("[G-A-L-B-O-T] Skipping model inference as per user choice. ")
-            TermUI.log_warn("[G-A-L-B-O-T] If you want to use [Place Spider to Tray] Model, just run ros_agent in other terminal.")
-
         
-        TermUI.log_success("Moved to tray position. ")
         return True
 
-    def run_full_workflow(self, run_model):
+    def run_workflow(self, run_model):
         if run_model == "full":
             TermUI.log_warn("Running FULL workflow including all tasks.")
+            self.controller.move_to_safe_pose()
             if not self.run_task_pick_from_box(): return
             if not self.run_task_place_right(): return
             if not self.run_task_pick_from_box(): return
             if not self.run_task_place_left(): return
             if not self.run_task_pick_hardcoded_left(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_pick_hardcoded_right(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
         elif run_model == "right":
             TermUI.log_warn("Running PipeLine starting [Place on Right Workshop]")
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_right(): return
             if not self.run_task_pick_from_box(): return
             if not self.run_task_place_left(): return
             if not self.run_task_pick_hardcoded_left(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_pick_hardcoded_right(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
         elif run_model == "left":
             TermUI.log_warn("Running PipeLine starting [Place on Left Workshop]")
             if not self.run_task_place_left(): return
             if not self.run_task_pick_hardcoded_left(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_pick_hardcoded_right(): return
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
         elif run_model == "tray":
             TermUI.log_warn("Running PipeLine starting [Place on Tray]")
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
         elif run_model == "only_left":
             TermUI.log_warn("Running ONLY [Place on Left Workshop]")
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_left(): return
         elif run_model == "only_right":
             TermUI.log_warn("Running ONLY [Place on Right Workshop]")
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_right(): return
         elif run_model == "only_tray":
             TermUI.log_warn("Running ONLY [Place on Tray]")
+            self.controller.move_to_safe_pose()
             if not self.run_task_place_tray(): return
         
         TermUI.banner("ALL TASKS COMPLETED SUCCESSFULLY", color=TermUI.GREEN)
-
-
-# ==============================================================================
-#                               MAIN ENTRY
-# ==============================================================================
 
 def load_config(config_path):
     if not os.path.exists(config_path):
@@ -681,8 +643,7 @@ def main():
     
     try:
         executor = TaskExecutor(cfg)
-        time.sleep(1.0)
-        executor.run_full_workflow(args.mode)
+        executor.run_workflow(args.mode)
     except KeyboardInterrupt:
         TermUI.banner("Stopping Agent (Ctrl+C)", color=TermUI.FAIL)
     except Exception as e:
