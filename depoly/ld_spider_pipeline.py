@@ -3,6 +3,9 @@
 
 import os
 import sys
+
+sys.path.append("/home/abc/dev/galbot_porter/scripts")
+
 import time
 import json
 import logging
@@ -17,6 +20,7 @@ import numpy as np
 import cv2
 import websocket
 from pynput import keyboard
+from galbot_porter.scripts.seach_grasp import FSM
 
 # ROS Imports
 import rospy
@@ -73,6 +77,9 @@ class TermUI:
 
     @classmethod
     def ask_user(cls, prompt: str, task_name: str) -> bool:
+        # if not DEBUG_MODE:
+        #     print(f" [G-A-L-B-O-T] {cls.BOLD}Skip User INTERACTION due to RELEASE MODE!!!{cls.ENDC}")
+        #     return True
         print(f"\n{cls.WARNING}" + "-" * 60)
         print(f" [G-A-L-B-O-T] INTERACTION REQUIRED: {cls.BOLD}{task_name}{cls.ENDC}{cls.WARNING}")
         print(f" [G-A-L-B-O-T] Instruction: {prompt}")
@@ -153,7 +160,6 @@ class SensorManager:
             rospy.logerr_throttle(5, f"State {name} error: {e}")
 
     def get_observation(self, prompt: str) -> Optional[Dict]:
-        """构建 OpenPI 格式的观测数据"""
         with self.lock:
             # Check data integrity
             missing_cams = [k for k, v in self.camera_images.items() if v is None]
@@ -290,11 +296,11 @@ class GalbotController:
         """处理并执行动作序列"""
         gripper_cfg = self.cfg['robot']['gripper']
         offset = gripper_cfg['offset']
-        # max_limit = gripper_cfg['action_limit'] # Preserved comment
+        max_limit = gripper_cfg['action_limit'] # Preserved comment
 
         if isinstance(actions, np.ndarray):
             actions[:, 7] = np.maximum(actions[:, 7] - offset, 0.0)
-            # actions[:, 7] = np.minimum(actions[:, 7], max_limit)
+            actions[:, 7] = np.minimum(actions[:, 7], max_limit)
 
         self.publisher.add_joints(actions)
 
@@ -306,7 +312,7 @@ class GalbotController:
     # Motion Primitives Wrappers
     # --------------------------------------------------------------------------
 
-    def move_arm(self, joints, speed=0.6, arm="left_arm", async_mode=False):
+    def move_arm(self, joints, speed=0.7, arm="left_arm", async_mode=False):
         try:
             self.interface.set_arm_joint_angles(
                 arm_joint_angles=joints, speed=speed, arm=arm, asynchronous=async_mode
@@ -319,7 +325,7 @@ class GalbotController:
     def move_arm_slow(self, joints, speed=0.3, arm="left_arm", async_mode=False):
         self.move_arm(joints, speed, arm, async_mode)
 
-    def move_legs(self, joints, speed=0.6, async_mode=False):
+    def move_legs(self, joints, speed=0.7, async_mode=False):
         try:
             self.interface.set_leg_joint_angles(
                 leg_joint_angles=joints, speed=speed, asynchronous=async_mode
@@ -341,6 +347,9 @@ class GalbotController:
 
     def gripper_open(self, side="left"):
         self._set_gripper(side, 0.8)
+
+    def gripper_open_half(self, side="left"):
+        self._set_gripper(side, 0.5)
 
     # --------------------------------------------------------------------------
     # Status Checks & Safety
@@ -364,8 +373,7 @@ class GalbotController:
             if not is_running:
                 break
             time.sleep(0.05)
-            # Throttle log could be added here to avoid spamming
-            # TermUI.log_warn(f"[G-A-L-B-O-T] Waiting for {readable_name}...")
+            TermUI.log_warn(f"[G-A-L-B-O-T] Waiting for {readable_name}...")
 
     def wait_until_all_done(self):
         self.wait_until_done("left_arm")
@@ -375,6 +383,8 @@ class GalbotController:
     def move_to_safe_pose(self):
         """移动到预定义的安全姿态"""
         # Note: Using config from 'place_spider_on_workshop_right' as per original code
+        # time.sleep(1.5)
+        self.wait_until_all_done()
         c = self.cfg['place_spider_on_workshop_right']
         
         if DEBUG_MODE and not TermUI.ask_user("[G-A-L-B-O-T] Move to safe pose?", "SAFETY CHECK"):
@@ -382,7 +392,28 @@ class GalbotController:
 
         self.move_arm(c['safty_left_arm_joints'], arm="left_arm", async_mode=True)
         self.move_arm(c['safty_right_arm_joints'], arm="right_arm", async_mode=True)
-        time.sleep(1.5)
+        # time.sleep(1.5)
+        self.wait_until_all_done()
+    
+    def move_to_safe_wait_exechange(self):
+        """移动到预定义的安全姿态并等待完成"""
+        if TermUI.ask_user("[G-A-L-B-O-T] Need move to safe for exechanging?", "SAFETY CHECK"):
+            self.move_to_safe_pose()
+        if TermUI.ask_user("[G-A-L-B-O-T] Have you exechanged?", "SAFETY CHECK"):
+            TermUI.log_success("Now we do tray next.")
+
+    def move_to_face_spider_box(self):
+        """移动到面对蜘蛛盒子的预定义姿态"""
+        # time.sleep(1.5)
+        c = self.cfg['place_spider_on_workshop_right']
+        
+        self.wait_until_all_done()
+        if DEBUG_MODE and not TermUI.ask_user("[G-A-L-B-O-T] Move to face spider box pose?", "SAFETY CHECK"):
+            return
+
+        self.wait_until_all_done()
+        self.move_legs(c['init_leg_joints'], async_mode=True)
+        self.wait_until_all_done()
 
 
 # ==============================================================================
@@ -410,7 +441,7 @@ class TaskExecutor:
         if self.policy_client is None or self.policy_client.ws_url != url:
             self.policy_client = WebSocketPolicyClient(url)
 
-    def _perform_pre_place_maneuver(self, config_section, prompt_text="Move to initial pose?"):
+    def _perform_pre_place_maneuver(self, config_section, prompt_text="Move to initial pose?", arms_move=True, legs_move=True):
         """
         通用的前置动作：腿部移动 -> 等待 -> 双臂移动 -> 右爪闭合 -> (可选)左爪闭合
         用于减少 run_task_* 函数中的重复代码
@@ -424,13 +455,15 @@ class TaskExecutor:
         self.controller.wait_until_all_done()
         
         # 1. Move Legs
-        self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        if 'init_leg_joints' in c:
-            time.sleep(2.0) 
+        if legs_move:
+            self.controller.move_legs(c['init_leg_joints'], async_mode=True)
+            if 'init_leg_joints' in c:
+                time.sleep(1.5) 
 
-        # 2. Move Arms
-        self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
-        self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
+        # 2. Move Arms, skip by user setting
+        if arms_move:
+            self.controller.move_arm(c['init_place_left_arm_joints'], arm="left_arm", async_mode=True)
+            self.controller.move_arm(c['init_place_right_arm_joints'], arm="right_arm", async_mode=True)
         
         # 3. Grippers
         self.controller.gripper_close("right")
@@ -479,7 +512,7 @@ class TaskExecutor:
 
                 step += 1
                 # Small delay to align with execution horizon
-                time.sleep(exec_horizon / 50.0 + 0.3)
+                time.sleep(exec_horizon / 50.0 + 0.2)
                 
         finally:
             listener.stop()
@@ -493,9 +526,15 @@ class TaskExecutor:
     def run_task_pick_from_box(self):
         """"Task: Pick Spider from Box"""
         TermUI.banner("TASK 0: Pick Spider from Box")
+        
+        if TermUI.ask_user("[G-A-L-B-O-T] PICK FROM BOX BY HAND NOW!!!", "PICK"):
+            TermUI.log_warn("YOU ALREADY PICKED THE SPIDER BY HAND.")
+
         return self._perform_pre_place_maneuver(
             self.cfg['pick_spider_from_box'], 
-            "Move to placing spider pose?"
+            "Move to placing spider pose?",
+            arms_move=False,
+            legs_move=True
         )
 
     def run_task_place_left(self):
@@ -505,7 +544,9 @@ class TaskExecutor:
         # 1. Pre-motion
         if not self._perform_pre_place_maneuver(
             self.cfg['place_spider_on_workshop'], 
-            "Move to initial placing pose?"
+            "Move to initial placing pose?",
+            arms_move=True,
+            legs_move=False
         ):
             return True # User skipped motion but didn't fail
 
@@ -528,7 +569,9 @@ class TaskExecutor:
         # 1. Pre-motion
         if not self._perform_pre_place_maneuver(
             self.cfg['place_spider_on_workshop_right'], 
-            "Move to initial placing pose?"
+            "Move to initial placing pose?",
+            arms_move=True,
+            legs_move=False
         ):
             return True
 
@@ -550,7 +593,7 @@ class TaskExecutor:
         TermUI.banner("TASK: Pick from Workshop (Left)")
         c = self.cfg['pick_spider_from_workshop_left']
 
-        self.controller.gripper_open("left")
+        self.controller.gripper_open_half("left")
         
         self.controller.move_arm(c['pick_left_arm_joints_wp1'], arm="left_arm")
         self.controller.wait_until_done("left_arm")
@@ -570,7 +613,8 @@ class TaskExecutor:
 
         TermUI.banner("TASK: Pick from Workshop (Right)")
         c = self.cfg['pick_spider_from_workshop_right']
-
+        
+        self.controller.wait_until_all_done()
         self.controller.move_to_safe_pose()
 
         # Complex Pre-motion sequence specific to this task
@@ -601,10 +645,16 @@ class TaskExecutor:
         c = self.cfg['place_spider_on_tray']
 
         # Pre-motion
-        self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        time.sleep(1.5)
-        self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
-        self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
+        # self.controller.move_legs(c['init_leg_joints'], async_mode=True)
+        # time.sleep(1.5)
+        # self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
+        # self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
+        if not self._perform_pre_place_maneuver(
+            c, "Move to initial placing pose?", 
+            arms_move=True, 
+            legs_move=True
+        ):
+            return True
         
         self.controller.wait_until_all_done()
         
@@ -629,21 +679,23 @@ class TaskExecutor:
         task_pick_hard_r = self.run_task_pick_hardcoded_right
         task_tray = self.run_task_place_tray
         safe_pose = self.controller.move_to_safe_pose
+        wait_exechange = self.controller.move_to_safe_wait_exechange
+        move_to_face_spider_box = self.controller.move_to_face_spider_box
 
         workflow_steps = []
 
         if run_mode == "full":
             workflow_steps = [
-                safe_pose, task_pick_box, task_place_r, 
-                task_pick_box, task_place_l, task_pick_hard_l,
+                safe_pose, move_to_face_spider_box, task_pick_box, task_place_r, 
+                task_pick_box, task_place_l, wait_exechange, task_pick_hard_l,
                 safe_pose, task_tray, 
                 safe_pose, task_pick_hard_r,
                 safe_pose, task_tray
             ]
         elif run_mode == "right":
             workflow_steps = [
-                safe_pose, task_place_r, 
-                task_pick_box, task_place_l, task_pick_hard_l,
+                move_to_face_spider_box, task_place_r, 
+                task_pick_box, task_place_l,  wait_exechange, task_pick_hard_l,
                 safe_pose, task_tray, 
                 safe_pose, task_pick_hard_r,
                 safe_pose, task_tray
@@ -655,6 +707,13 @@ class TaskExecutor:
                 safe_pose, task_pick_hard_r,
                 safe_pose, task_tray
             ]
+        elif run_mode == "hardcoded_left":
+            workflow_steps = [
+                task_pick_hard_l,
+                safe_pose, task_tray, 
+                safe_pose, task_pick_hard_r,
+                safe_pose, task_tray
+            ]
         elif run_mode == "tray":
             workflow_steps = [safe_pose, task_tray]
         elif run_mode == "only_left":
@@ -662,7 +721,12 @@ class TaskExecutor:
         elif run_mode == "only_right":
             workflow_steps = [safe_pose, task_place_r]
         elif run_mode == "only_tray":
-            workflow_steps = [safe_pose, task_tray]
+            workflow_steps = [task_tray]
+        elif run_mode == "place_loop":
+            workflow_steps = [
+                task_pick_box, task_place_r, 
+                task_pick_box, task_place_l
+            ]
         else:
             TermUI.log_error(f"Unknown mode: {run_mode}")
             return
