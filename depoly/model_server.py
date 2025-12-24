@@ -58,11 +58,14 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LD_TRAY: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
         # dir="/mnt/dataE/ckpts/galbot_ld_1126_6k/20000",
-        dir="/mnt/dataE/ckpts/galbot_ld_1212_tray_base_model_750/galbot_ld_1212_tray_base_model_750_16k_steps",
+        # dir="/mnt/dataE/ckpts/galbot_ld_1212_tray_base_model_750/galbot_ld_1212_tray_base_model_750_16k_steps",
+         dir="/mnt/dataE/ckpts/galbot_ld_1222_tray_data_refine/15000",
+        # dir='/mnt/dataE/ckpts/galbot_ld_1221_tray/5000'
     ),
     EnvMode.LD_WORKSPACE_LEFT: Checkpoint(
         config="pi0_galbot_low_mem_finetune",
         dir='/mnt/dataE/ckpts/galbot_ld_train_on_base_model_1210_700episodes/galbot_ld_train_on_base_model_1210_700episodes_20000'
+        # dir = '/mnt/dataE/ckpts/galbot_ld_1217_left_workspace_base_14k_fm_3c/15000'
     ),
     EnvMode.LD_WORKSPACE_RIGHT: Checkpoint(
         config="pi0_galbot_low_mem_finetune",

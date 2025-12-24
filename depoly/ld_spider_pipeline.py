@@ -30,6 +30,9 @@ from openpi_client import msgpack_numpy
 from galbot_control_interface import GalbotControlInterface
 from joint_pulisher import ExternalDataJointPublisher
 
+# import galbot_porter for grasp using foundation_pose
+import galbot_porter.scripts.main_dev as galbot_porter_main
+
 
 # ==============================================================================
 #                               CONFIG & CONSTANTS
@@ -259,6 +262,9 @@ class GalbotController:
         self.publisher = ExternalDataJointPublisher(frequency=50, max_queue_size=1000)
         self.is_publishing = False
         self.sock = None
+
+        config_path = os.path.join("/home/abc/dev/openpi/depoly/galbot_porter", "config/")
+        self.galbot_porter_fsm = galbot_porter_main.FSM( log_level="INFO", config_path=config_path,)
         
         self._setup_socket_connection()
 
@@ -409,7 +415,6 @@ class GalbotController:
 
     def move_to_face_spider_box(self):
         """移动到面对蜘蛛盒子的预定义姿态"""
-        # time.sleep(1.5)
         c = self.cfg['place_spider_on_workshop_right']
         
         self.wait_until_all_done()
@@ -632,8 +637,8 @@ class TaskExecutor:
         # Pre-motion
         self.controller.move_legs(c['init_leg_joints'], async_mode=True)
         time.sleep(1.5)
-        self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm")
-        self.controller.move_arm(c['right_arm_obs'], arm="right_arm")
+        self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm", async_mode=True)
+        self.controller.move_arm(c['right_arm_obs'], arm="right_arm", async_mode=True)
         
         self.controller.wait_until_all_done()
         
@@ -661,42 +666,86 @@ class TaskExecutor:
         wait_exechange = self.controller.move_to_safe_wait_exechange
         move_to_face_spider_box = self.controller.move_to_face_spider_box
 
+        # foundation_pose pick
+        pick_idle = self.controller.galbot_porter_fsm.idle
+        pick_goto_grasp_pos = self.controller.galbot_porter_fsm.goto_grasp_position
+        pick_search_grasp = self.controller.galbot_porter_fsm.sreach_target
+        pick_grasp_target = self.controller.galbot_porter_fsm.grasp_target
+        pick_goto_grasp_pos_first = self.controller.galbot_porter_fsm.goto_place_position_first
+        pick_goto_grasp_pos_second = self.controller.galbot_porter_fsm.goto_place_position_second
+
+        # foundation_pose grasp_left
+        grasp_left = self.controller.galbot_porter_fsm.grasp_left
+        grasp_right = self.controller.galbot_porter_fsm.grasp_right
+
         workflow_steps = []
 
         if run_mode == "full":
             workflow_steps = [
-                safe_pose, move_to_face_spider_box, task_pick_box, task_place_r, 
-                task_pick_box, task_place_l, wait_exechange, task_pick_hard_l,
+                safe_pose, move_to_face_spider_box, 
+                # pick first spider
+                pick_idle, pick_goto_grasp_pos, pick_search_grasp, pick_grasp_target, pick_goto_grasp_pos_first,
+                task_pick_box, task_place_r, 
+                #pick second spider
+                pick_idle, pick_goto_grasp_pos, pick_search_grasp, pick_grasp_target, pick_goto_grasp_pos_second,
+                task_pick_box, task_place_l, wait_exechange, 
+                # grasp left
+                grasp_left,
+                task_pick_hard_l,
                 safe_pose, task_tray, 
-                safe_pose, move_to_face_spider_box, task_pick_hard_r,
-                safe_pose, task_tray
+                safe_pose, move_to_face_spider_box, 
+                # grasp right
+                grasp_right,
+                task_pick_hard_r,
+                safe_pose, task_tray,
+
+                safe_pose, move_to_face_spider_box
             ]
         elif run_mode == "from_right":
             workflow_steps = [
-                move_to_face_spider_box, task_place_r, 
-                task_pick_box, task_place_l,  wait_exechange, task_pick_hard_l,
+                move_to_face_spider_box, 
+                # pick first spider
+                pick_idle, pick_goto_grasp_pos, pick_search_grasp, pick_grasp_target, pick_goto_grasp_pos_first,
+                task_pick_box, task_place_r, 
+                #pick second spider
+                pick_idle, pick_goto_grasp_pos, pick_search_grasp, pick_grasp_target, pick_goto_grasp_pos_second,
+                task_pick_box, task_place_l, wait_exechange, 
+                # grasp left
+                grasp_left,
+                task_pick_hard_l,
                 safe_pose, task_tray, 
-                safe_pose, move_to_face_spider_box, task_pick_hard_r,
-                safe_pose, task_tray
-            ]
-        elif run_mode == "from_left":
-            workflow_steps = [
-                task_place_l, task_pick_hard_l,
-                safe_pose, task_tray, 
-                safe_pose, move_to_face_spider_box, task_pick_hard_r,
-                safe_pose, task_tray
+                safe_pose, move_to_face_spider_box, 
+                # grasp right
+                grasp_right,
+                task_pick_hard_r,
+                safe_pose, task_tray,
+
+                safe_pose, move_to_face_spider_box
             ]
         elif run_mode == "from_hardcoded_left":
             workflow_steps = [
+                wait_exechange, 
+                # grasp left
+                grasp_left,
                 task_pick_hard_l,
                 safe_pose, task_tray, 
-                safe_pose, move_to_face_spider_box,task_pick_hard_r,
-                safe_pose, task_tray
+                safe_pose, move_to_face_spider_box, 
+                # grasp right
+                grasp_right,
+                task_pick_hard_r,
+                safe_pose, task_tray,
+
+                safe_pose, move_to_face_spider_box
             ]
         elif run_mode == "from_hardcoded_right":
             workflow_steps = [
+                safe_pose, move_to_face_spider_box, 
+                # grasp right
+                grasp_right,
                 task_pick_hard_r,
-                safe_pose, task_tray
+                safe_pose, task_tray,
+
+                safe_pose, move_to_face_spider_box
             ]
         elif run_mode == "tray":
             workflow_steps = [safe_pose, task_tray]
