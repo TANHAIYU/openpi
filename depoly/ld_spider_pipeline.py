@@ -338,7 +338,7 @@ class GalbotController:
         except Exception as e:
             TermUI.log_error(f"Move arm ({arm}) failed: {e}")
 
-    def move_legs(self, joints, speed=0.7, async_mode=False):
+    def move_legs(self, joints, speed=0.4, async_mode=False):
         try:
             self.interface.set_leg_joint_angles(
                 leg_joint_angles=joints, speed=speed, asynchronous=async_mode
@@ -422,7 +422,7 @@ class GalbotController:
             return
 
         self.wait_until_all_done()
-        self.move_legs(c['init_leg_joints'], async_mode=True)
+        self.move_legs(c['init_leg_joints'], speed=0.3, async_mode=True)
         self.wait_until_all_done()
 
 
@@ -477,9 +477,10 @@ class TaskExecutor:
         
         # 1. Move Legs
         if legs_move:
-            self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-            if 'init_leg_joints' in c:
-                time.sleep(1.5) 
+            self.controller.move_legs(c['init_leg_joints'], speed=0.4, async_mode=True)
+            # if 'init_leg_joints' in c:
+            #     time.sleep(1.5) 
+            self.controller.wait_until_all_done()
 
         # 2. Move Arms, skip by user setting
         if arms_move:
@@ -636,7 +637,8 @@ class TaskExecutor:
 
         # Pre-motion
         self.controller.move_legs(c['init_leg_joints'], async_mode=True)
-        time.sleep(1.5)
+        # time.sleep(1.5)
+        self.controller.wait_until_all_done()
         self.controller.move_arm(c['init_place_arm_joints1'], arm="left_arm", async_mode=True)
         self.controller.move_arm(c['right_arm_obs'], arm="right_arm", async_mode=True)
         
