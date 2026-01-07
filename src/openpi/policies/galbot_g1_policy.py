@@ -57,6 +57,11 @@ class GalbotInputs(transforms.DataTransformFn):
         left_wrist_image = _parse_image(data["wrist_image_left"])
         right_wrist_image = _parse_image(data["wrist_image_right"])
 
+        if "right" in data["prompt"]:
+            print("Using right wrist image from data.")
+        else:
+            print("Do not use right wrist image from data.")
+
         # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
             "state": data["state"],
@@ -69,7 +74,7 @@ class GalbotInputs(transforms.DataTransformFn):
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
                 # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
-                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+                "right_wrist_0_rgb": np.True_ if "right" in data["prompt"] else np.False_,
             },
         }
 
