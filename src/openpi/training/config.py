@@ -665,7 +665,7 @@ class TrainConfig:
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = 2500
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -850,12 +850,16 @@ _CONFIGS = [
         name="pi0_galbot_low_mem_finetune",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotGalbotDataConfig(
-            repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_left_1217_ld",
+            # repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_left_1217_ld",
+            # repo_id="/home/data_sdd/data/ld_lerobot/place_on_workspace_right_1221_ld",
+            # repo_id="/home/data_sdd/data/ld_lerobot/place_on_tray_1221_ld",
+            repo_id="/home/data_sdd/data/ld_lerobot/tray_and_left_workspace_20250107_ld",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
         # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/home/data_sdd/weights/pi0_ckpt/galbot_ld/pi0_galbot_low_mem_finetune/galbot_ld_1214_foundation_model/60000"),
+        # weight_loader=weight_loaders.CheckpointWeightLoader("/home/data_sdd/weights/pi0_ckpt/galbot_ld/pi0_galbot_low_mem_finetune/galbot_ld_1214_foundation_model/60000/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/data_sdd/weights/pi0_ckpt/galbot_ld/pi0_galbot_low_mem_finetune/galbot_ld_1206_base_lora_128_pred_horizon_50/80000/params"),
         num_train_steps=100_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
